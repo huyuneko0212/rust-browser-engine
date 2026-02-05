@@ -3,9 +3,10 @@ mod url;
 mod http;
 mod show;
 mod html;
-use url::URL;
-
-use crate::html::Parser;
+mod css;
+// use url::URL;
+use css::Parser as CssParser;
+// use crate::html::Parser;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -15,12 +16,12 @@ fn main() {
         return;
     }
 
-    let url = URL::new(&args[1]);
-    let response = http::request(&url);
-    let html = response.body;
-    let mut parser = Parser::new(html);
-    let nodes = parser.parse_nodes();
-    println!("{:#?}", nodes);
+    // let url = URL::new(&args[1]);
+    // let response = http::request(&url);
+    // let html = response.body;
+    // let mut parser = Parser::new(html);
+    // let nodes = parser.parse_nodes();
+    // println!("{:#?}", nodes);
 
 //     println!("status: {}",response.status_code);
 //     println!("--- headers ---");
@@ -29,4 +30,15 @@ fn main() {
 //     }
 // println!("--------------");
     // show::show(&response.body);
+    let css = "
+        h1 { color: red; font-size: 20px; }
+        p { color: blue; }
+    ";
+
+    let mut parser = CssParser::new(css.to_string());
+    println!("1");
+    let stylesheet = parser.parse_stylesheet();
+    println!("2");
+
+    println!("{:#?}", stylesheet);
 }
