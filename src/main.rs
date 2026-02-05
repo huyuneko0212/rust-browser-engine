@@ -13,6 +13,13 @@ fn main() {
     }
 
     let url = URL::new(&args[1]);
-    let body = http::request(&url);
-    show::show(&body);
+    let response = http::request(&url);
+
+    println!("status: {}",response.status_code);
+    println!("--- headers ---");
+    for (k, v) in &response.headers {
+        println!("{}: {}", k, v);
+    }
+println!("--------------");
+    show::show(&response.body);
 }
