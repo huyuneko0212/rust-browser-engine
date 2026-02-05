@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 pub fn show(body: &str) {
     let mut in_tag = false;
 
