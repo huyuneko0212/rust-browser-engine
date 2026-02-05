@@ -1,0 +1,7 @@
+[package]
+name = "rust_web_browser_engineering"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+native-tls = "0.2.14"
