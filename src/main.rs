@@ -10,6 +10,7 @@ mod painter_window;
 mod show;
 mod style;
 mod url;
+mod renderer;
 
 use url::URL;
 
@@ -56,8 +57,10 @@ fn main() {
     viewport.content.width = 800.0;
     layout_root.layout(viewport);
     let display_list = paint::build_display_list(&layout_root);
-
-    painter_window::run(display_list);
+    
+    let body = "Rust Browser Engine".to_string();
+    renderer::run_text(body);
+    // painter_window::run(display_list);
 
     println!("---- 完了 ----");
 }
