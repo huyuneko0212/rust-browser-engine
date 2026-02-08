@@ -80,19 +80,19 @@ fn main() {
     let mut viewport = layout::Dimensions::default();
     viewport.content.width = 800.0;
     viewport.content.height = 600.0;
+    let font_bytes = std::fs::read("C:\\Windows\\Fonts\\meiryo.ttc").unwrap();
+    let font = fontdue::Font::from_bytes(font_bytes, fontdue::FontSettings::default()).unwrap();
 
-    layout_root.layout(viewport);
+    layout_root.layout_with_font(viewport, &font);
     println!("layout完了");
 
     // -------------------------
     // display list
     // -------------------------
-    let font_bytes = std::fs::read("C:\\Windows\\Fonts\\meiryo.ttc").unwrap();
-    let font = fontdue::Font::from_bytes(font_bytes, fontdue::FontSettings::default()).unwrap();
+
     let mut display_list = vec![];
     display::build_display_list(&layout_root, &mut display_list, &font);
     println!("display items: {}", display_list.len());
-
     // -------------------------
     // window + gpu
     // -------------------------

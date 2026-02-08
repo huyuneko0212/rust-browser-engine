@@ -24,16 +24,46 @@ impl StyledNode {
         self.specified_values.get(name)
     }
 
+    /// display の最小実装（重要：TextはInline）
+    /// - CSSで display が指定されていればそれを優先
+    /// - Textノードは必ず Inline（これをやらないと display_list で拾えなくなり “真っ白” になりがち）
+    /// - HTMLのデフォルト表示に寄せて、よくあるインライン要素は Inline
+    /// - それ以外は Block（最小実装）
     pub fn display(&self) -> Display {
-        match self.value("display").map(|s| s.as_str()) {
-            Some("block") => Display::Block,
-            Some("none") => Display::None,
-            _ => Display::Block, // 最小実装は全部 block でOK（後でinline判定する）
+        // ★Textノードは必ず inline
+        if matches!(self.node.node_type, NodeType::Text(_)) {
+            return Display::Inline;
         }
+
+        // CSSで指定があれば最優先
+        if let Some(v) = self.value("display").map(|s| s.as_str()) {
+            return match v {
+                "block" => Display::Block,
+                "inline" => Display::Inline,
+                "none" => Display::None,
+                _ => Display::Block,
+            };
+        }
+
+        // Elementのデフォルト（超最小）
+        // ここを入れると a/span が inline になって自然になる
+        if let NodeType::Element(ref e) = self.node.node_type {
+            if is_inline_element(&e.tag_name) {
+                return Display::Inline;
+            }
+            if is_hidden_element(&e.tag_name) {
+                return Display::None;
+            }
+        }
+
+        // 最小実装：基本は block
+        Display::Block
     }
+
     pub fn color(&self) -> Option<[f32; 4]> {
         self.value("color").and_then(|v| parse_color(v))
     }
+
     pub fn background_color(&self) -> Option<[f32; 4]> {
         // background も background-color も見る（最小実装）
         if let Some(v) = self.value("background-color") {
@@ -48,6 +78,19 @@ impl StyledNode {
         }
         None
     }
+}
+
+/// HTMLのデフォルト表示に寄せた “最小” inline判定
+fn is_inline_element(tag: &str) -> bool {
+    matches!(
+        tag,
+        "a" | "span" | "strong" | "em" | "b" | "i" | "u" | "small" | "code" | "br" | "img"
+    )
+}
+
+/// そもそも表示しない（display:none相当）
+fn is_hidden_element(tag: &str) -> bool {
+    matches!(tag, "head" | "meta" | "title" | "script" | "style" | "link")
 }
 
 pub fn style_tree(root: Node, stylesheet: &Stylesheet) -> StyledNode {
