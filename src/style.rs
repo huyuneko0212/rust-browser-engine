@@ -26,6 +26,13 @@ impl StyledNode {
         self.specified_values.get(name).cloned()
     }
 
+    pub fn text(&self) -> Option<&str> {
+        match &self.node.node_type {
+            NodeType::Text(t) => Some(t),
+            _ => None,
+        }
+    }
+
     /// display取得
     pub fn display(&self) -> Display {
         match self.value("display") {
