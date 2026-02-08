@@ -1,66 +1,126 @@
-use std::env;
-
 mod css;
 mod dom;
 mod html;
 mod http;
 mod layout;
-mod paint;
-mod painter_window;
-mod show;
 mod style;
 mod url;
-mod renderer;
 
-use url::URL;
+mod display;
+mod gpu;
+mod render;
+
+use std::env;
+
+use winit::{
+    event::{Event, WindowEvent},
+    event_loop::{ControlFlow, EventLoop},
+    window::WindowBuilder,
+};
+
+use crate::gpu::GPU;
+
+fn extract_style_text(node: &dom::Node, out: &mut String) {
+    match &node.node_type {
+        dom::NodeType::Element(ed) => {
+            if ed.tag_name == "style" {
+                // style要素直下のTextを集める
+                for c in &node.children {
+                    if let dom::NodeType::Text(t) = &c.node_type {
+                        out.push_str(t);
+                        out.push('\n');
+                    }
+                }
+            } else {
+                for c in &node.children {
+                    extract_style_text(c, out);
+                }
+            }
+        }
+        _ => {
+            for c in &node.children {
+                extract_style_text(c, out);
+            }
+        }
+    }
+}
 
 fn main() {
-    // -------------------------------
-    // 引数取得
-    // -------------------------------
-    let args: Vec<String> = env::args().collect();
+    let url_str = env::args().nth(1).expect("url required");
 
-    if args.len() < 2 {
-        println!("usage: cargo run <url>");
-        return;
-    }
-
-    let url_str = &args[1];
-    let url = URL::new(url_str);
-
-    // println!("fetching: {}", url_str);
-
-    // -------------------------------
-    // HTML取得
-    // -------------------------------
+    // -------------------------
+    // ネットワーク → DOM
+    // -------------------------
+    let url = url::URL::new(&url_str);
     let response = http::request(&url);
     let body = response.body;
 
-    // -------------------------------
-    // Style tree生成
-    // -------------------------------
-    // let styled_root = style::style_tree(dom, &stylesheet);
-    // println!("---- STYLE TREE ----");
-    // println!("{:#?}", styled_root);
+    println!("HTML取得完了");
+    let dom_root = html::parse(body);
+    println!("DOM生成完了");
 
-    let css_string = "
-    h1 { width:300px; height:40px; }
-    p { width:500px; }
-    "
-    .to_string();
+    // -------------------------
+    // CSS抽出（<style>）
+    // -------------------------
+    let mut css_text = String::new();
+    extract_style_text(&dom_root, &mut css_text);
+    println!("CSS抽出: {} bytes", css_text.len());
 
-    let dom = html::parse(body.clone());
-    let css = css::Parser::new(css_string).parse_stylesheet();
-    let styled_root = style::style_tree(dom, &css);
+    // -------------------------
+    // CSS parse → style tree
+    // -------------------------
+    let stylesheet = css::Parser::new(css_text).parse_stylesheet();
+    let styled_root = style::style_tree(dom_root, &stylesheet);
+
+    // -------------------------
+    // layout tree
+    // -------------------------
     let mut layout_root = layout::build_layout_tree(styled_root);
+
     let mut viewport = layout::Dimensions::default();
     viewport.content.width = 800.0;
-    layout_root.layout(viewport);
-    let display_list = paint::build_display_list(&layout_root);
-    
-    let body = "Rust Browser Engine".to_string();
-    renderer::run_text(body);
-    // painter_window::run(display_list);
+    viewport.content.height = 600.0;
 
-    println!("---- 完了 ----");
+    layout_root.layout(viewport);
+    println!("layout完了");
+
+    // -------------------------
+    // display list
+    // -------------------------
+    let mut display_list = vec![];
+    display::build_display_list(&layout_root, &mut display_list);
+    println!("display items: {}", display_list.len());
+
+    // -------------------------
+    // window + gpu
+    // -------------------------
+    let event_loop = EventLoop::new().unwrap();
+
+    let window: &'static winit::window::Window = Box::leak(Box::new(
+        WindowBuilder::new()
+            .with_title("Rust Browser (winit0.29 + wgpu0.19)")
+            .build(&event_loop)
+            .unwrap(),
+    ));
+
+    let mut gpu = pollster::block_on(GPU::new(window));
+
+    event_loop
+        .run(move |event, elwt| {
+            elwt.set_control_flow(ControlFlow::Poll);
+
+            match event {
+                Event::WindowEvent { event, .. } => match event {
+                    WindowEvent::CloseRequested => elwt.exit(),
+                    WindowEvent::Resized(size) => gpu.resize(size),
+                    WindowEvent::RedrawRequested => {
+                        render::render(&mut gpu, &display_list);
+                    }
+                    _ => {}
+                },
+                Event::AboutToWait => window.request_redraw(),
+                _ => {}
+            }
+        })
+        .unwrap();
 }

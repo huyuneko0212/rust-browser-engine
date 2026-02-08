@@ -1,97 +1,146 @@
-#![allow(dead_code)]
-
-use crate::css::*;
-use crate::dom::*;
 use std::collections::HashMap;
 
-/// display種別
-#[derive(Debug, Clone, PartialEq)]
+use crate::{css, dom};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Display {
-    Block,
     Inline,
+    Block,
     None,
 }
 
-/// style適用済みDOM
 #[derive(Debug, Clone)]
 pub struct StyledNode {
-    pub node: Node,
+    pub node: dom::Node,
     pub specified_values: HashMap<String, String>,
     pub children: Vec<StyledNode>,
 }
 
 impl StyledNode {
-    /// CSS値取得
-    pub fn value(&self, name: &str) -> Option<String> {
-        self.specified_values.get(name).cloned()
+    pub fn value(&self, name: &str) -> Option<&String> {
+        self.specified_values.get(name)
     }
 
-    pub fn text(&self) -> Option<&str> {
-        match &self.node.node_type {
-            NodeType::Text(t) => Some(t),
-            _ => None,
-        }
-    }
-
-    /// display取得
     pub fn display(&self) -> Display {
-        match self.value("display") {
-            Some(v) if v == "block" => Display::Block,
-            Some(v) if v == "inline" => Display::Inline,
-            Some(v) if v == "none" => Display::None,
-            _ => Display::Block, // デフォ block
+        if let Some(v) = self.value("display") {
+            match v.as_str() {
+                "none" => Display::None,
+                "block" => Display::Block,
+                "inline" => Display::Inline,
+                _ => Display::Inline,
+            }
+        } else {
+            // デフォルト：ElementはBlock寄り、TextはInline
+            match self.node.node_type {
+                dom::NodeType::Element(_) => Display::Block,
+                dom::NodeType::Text(_) => Display::Inline,
+            }
         }
+    }
+
+    pub fn lookup_px(&self, name: &str) -> f32 {
+        self.value(name)
+            .and_then(|s| parse_px(s))
+            .unwrap_or(0.0)
+    }
+
+    pub fn background_color(&self) -> Option<[f32; 4]> {
+        self.value("background")
+            .or_else(|| self.value("background-color"))
+            .and_then(|s| parse_color(s))
+    }
+
+    pub fn color(&self) -> Option<[f32; 4]> {
+        self.value("color").and_then(|s| parse_color(s))
     }
 }
 
-/// DOM + CSS → style tree
-pub fn style_tree(root: Node, stylesheet: &Stylesheet) -> StyledNode {
-    StyledNode {
-        specified_values: specified_values(&root, stylesheet),
-        children: root
+pub fn style_tree(root: dom::Node, stylesheet: &css::Stylesheet) -> StyledNode {
+    fn style_node(node: dom::Node, stylesheet: &css::Stylesheet) -> StyledNode {
+        let mut specified = HashMap::new();
+
+        if let dom::NodeType::Element(ed) = &node.node_type {
+            // UAデフォルト：script/style は表示しない
+            if ed.tag_name == "script" || ed.tag_name == "style" {
+                specified.insert("display".to_string(), "none".to_string());
+            }
+
+            // CSS rule 適用（タグ名 selector のみ）
+            for rule in &stylesheet.rules {
+                if matches_rule(ed, rule) {
+                    for decl in &rule.declarations {
+                        specified.insert(decl.name.clone(), decl.value.clone());
+                    }
+                }
+            }
+        }
+
+        let children = node
             .children
-            .clone()
-            .into_iter()
-            .map(|child| style_tree(child, stylesheet))
-            .collect(),
-        node: root,
-    }
-}
+            .iter()
+            .cloned()
+            .map(|c| style_node(c, stylesheet))
+            .collect::<Vec<_>>();
 
-/// 指定CSS取得
-fn specified_values(node: &Node, stylesheet: &Stylesheet) -> HashMap<String, String> {
-    let mut values = HashMap::new();
-
-    if let NodeType::Element(ref elem) = node.node_type {
-        let rules = matching_rules(elem, stylesheet);
-
-        for rule in rules {
-            for decl in rule.declarations.clone() {
-                values.insert(decl.name.clone(), decl.value.clone());
-            }
+        StyledNode {
+            node,
+            specified_values: specified,
+            children,
         }
     }
 
-    values
+    style_node(root, stylesheet)
 }
 
-/// マッチするCSSルール
-fn matching_rules<'a>(elem: &ElementData, stylesheet: &'a Stylesheet) -> Vec<&'a Rule> {
-    let mut matched = vec![];
-
-    for rule in &stylesheet.rules {
-        for selector in &rule.selector {
-            if matches(elem, selector) {
-                matched.push(rule);
-                break;
-            }
+fn matches_rule(ed: &dom::ElementData, rule: &css::Rule) -> bool {
+    // selector: Vec<Selector> だけど、ここでは "tag名" だけ見る
+    // 例：body { ... } / h1 { ... }
+    for sel in &rule.selector {
+        if sel.simple == ed.tag_name {
+            return true;
         }
     }
-
-    matched
+    false
 }
 
-/// selector一致判定（超簡易）
-fn matches(elem: &ElementData, selector: &Selector) -> bool {
-    selector.simple == elem.tag_name
+fn parse_px(s: &str) -> Option<f32> {
+    let t = s.trim();
+    if t.ends_with("px") {
+        t.trim_end_matches("px").trim().parse::<f32>().ok()
+    } else {
+        None
+    }
+}
+
+fn parse_color(s: &str) -> Option<[f32; 4]> {
+    let t = s.trim();
+    if let Some(hex) = t.strip_prefix('#') {
+        return parse_hex_color(hex);
+    }
+    // 超最低限（必要なら増やせる）
+    match t {
+        "black" => Some([0.0, 0.0, 0.0, 1.0]),
+        "white" => Some([1.0, 1.0, 1.0, 1.0]),
+        "gray" | "grey" => Some([0.5, 0.5, 0.5, 1.0]),
+        _ => None,
+    }
+}
+
+fn parse_hex_color(hex: &str) -> Option<[f32; 4]> {
+    let h = hex.trim();
+    match h.len() {
+        3 => {
+            let r = u8::from_str_radix(&h[0..1].repeat(2), 16).ok()?;
+            let g = u8::from_str_radix(&h[1..2].repeat(2), 16).ok()?;
+            let b = u8::from_str_radix(&h[2..3].repeat(2), 16).ok()?;
+            Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0])
+        }
+        6 => {
+            let r = u8::from_str_radix(&h[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&h[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&h[4..6], 16).ok()?;
+            Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0])
+        }
+        _ => None,
+    }
 }
