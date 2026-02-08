@@ -162,6 +162,17 @@ impl Parser {
             self.consume_char(); // '>'
         }
 
+        if tag_name == "script" || tag_name == "style" {
+            let text = self.consume_raw_text_until_end_tag(&tag_name);
+            return Node {
+                children: vec![Node {
+                    children: vec![],
+                    node_type: NodeType::Text(text),
+                }],
+                node_type: NodeType::Element(ElementData { tag_name }),
+            };
+        }
+
         // Voidタグ（閉じタグなし）
         let void_tags = [
             "meta", "img", "br", "hr", "input", "link", "area", "base", "col", "embed", "param",
@@ -201,6 +212,23 @@ impl Parser {
             children,
             node_type: NodeType::Element(ElementData { tag_name }),
         }
+    }
+
+    fn consume_raw_text_until_end_tag(&mut self, tag: &str) -> String {
+        let end = format!("</{}>", tag);
+        let mut out = String::new();
+
+        while !self.eof() {
+            if self.input[self.pos..].starts_with(&end) {
+                // consume "</tag>"
+                for _ in 0..end.chars().count() {
+                    self.consume_char();
+                }
+                break;
+            }
+            out.push(self.consume_char());
+        }
+        out
     }
 
     /// parent_tag を見て “暗黙閉じ” を入れる
@@ -275,8 +303,27 @@ impl Parser {
 fn is_block_tag(tag: &str) -> bool {
     matches!(
         tag,
-        "html" | "body" | "div" | "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol"
-            | "li" | "section" | "header" | "footer" | "main" | "article" | "nav" | "table"
-            | "form" | "pre"
+        "html"
+            | "body"
+            | "div"
+            | "p"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "ul"
+            | "ol"
+            | "li"
+            | "section"
+            | "header"
+            | "footer"
+            | "main"
+            | "article"
+            | "nav"
+            | "table"
+            | "form"
+            | "pre"
     )
 }
