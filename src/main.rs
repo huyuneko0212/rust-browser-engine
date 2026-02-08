@@ -6,6 +6,7 @@ mod html;
 mod http;
 mod layout;
 mod paint;
+mod painter_window;
 mod show;
 mod style;
 mod url;
@@ -49,22 +50,14 @@ fn main() {
 
     let dom = html::parse(body.clone());
     let css = css::Parser::new(css_string).parse_stylesheet();
-
     let styled_root = style::style_tree(dom, &css);
-
     let mut layout_root = layout::build_layout_tree(styled_root);
-
     let mut viewport = layout::Dimensions::default();
     viewport.content.width = 800.0;
-
     layout_root.layout(viewport);
-
     let display_list = paint::build_display_list(&layout_root);
 
-    println!("==== DISPLAY LIST ====");
-    for cmd in display_list {
-        println!("{:?}", cmd);
-    }
+    painter_window::run(display_list);
 
     println!("---- 完了 ----");
 }
