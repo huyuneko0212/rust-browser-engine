@@ -87,8 +87,10 @@ fn main() {
     // -------------------------
     // display list
     // -------------------------
+    let font_bytes = std::fs::read("C:\\Windows\\Fonts\\meiryo.ttc").unwrap();
+    let font = fontdue::Font::from_bytes(font_bytes, fontdue::FontSettings::default()).unwrap();
     let mut display_list = vec![];
-    display::build_display_list(&layout_root, &mut display_list);
+    display::build_display_list(&layout_root, &mut display_list, &font);
     println!("display items: {}", display_list.len());
 
     // -------------------------

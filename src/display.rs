@@ -1,4 +1,6 @@
 use crate::layout::LayoutBox;
+use fontdue::Font;
+
 
 #[derive(Debug, Clone)]
 pub enum DisplayItem {
@@ -24,8 +26,8 @@ pub struct DrawText {
     pub color: [f32; 4],
 }
 
-pub fn build_display_list(root: &LayoutBox, out: &mut Vec<DisplayItem>) {
-    fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>) {
+pub fn build_display_list(root: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font) {
+    fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font) {
         // style/script は描画しない（配下も止める）
         if let Some(sn) = node.get_style_node() {
             if let crate::dom::NodeType::Element(ed) = &sn.node.node_type {
@@ -71,7 +73,7 @@ pub fn build_display_list(root: &LayoutBox, out: &mut Vec<DisplayItem>) {
                     let max_w = c.width.max(1.0);
 
                     // tokens：英語は単語、日本語は文字
-                    let items = layout_text_naive(txt, start_x, start_y, max_w, font_size, line_h);
+                    let items = layout_text_fontdue(txt, start_x, start_y, max_w, font_size, line_h, font);
 
                     for (x, y, s) in items {
                         if !s.is_empty() {
@@ -89,11 +91,11 @@ pub fn build_display_list(root: &LayoutBox, out: &mut Vec<DisplayItem>) {
         }
 
         for child in &node.children {
-            walk(child, out);
+            walk(child, out, font);
         }
     }
 
-    walk(root, out);
+    walk(root, out, font);
 }
 
 // ---------------------------
@@ -129,30 +131,37 @@ fn parse_px(s: &str) -> Option<f32> {
 // inline layout (naive)
 // ---------------------------
 
-fn layout_text_naive(
+fn layout_text_fontdue(
     text: &str,
     start_x: f32,
     start_y: f32,
     max_w: f32,
     font_size: f32,
     line_h: f32,
+    font: &Font,
 ) -> Vec<(f32, f32, String)> {
     let mut out = vec![];
 
     let mut x = start_x;
     let mut y = start_y;
 
-    // 空白が多いなら単語、なければ文字
     let has_spaces = text.contains(' ');
+
+    // 英語は単語、日本語は文字
     let tokens: Vec<String> = if has_spaces {
-        // split_whitespace すると空白が消えるので、単語間スペースは後で足す
         text.split_whitespace().map(|s| s.to_string()).collect()
     } else {
         text.chars().map(|c| c.to_string()).collect()
     };
 
+    let space_w = if has_spaces {
+        measure_width_fontdue(font, " ", font_size)
+    } else {
+        0.0
+    };
+
     for tok in tokens {
-        let w = estimate_width(&tok, font_size);
+        let w = measure_width_fontdue(font, &tok, font_size);
 
         // 折り返し
         if x > start_x && x + w > start_x + max_w {
@@ -161,29 +170,23 @@ fn layout_text_naive(
         }
 
         out.push((x, y, tok.clone()));
-
-        // x更新
         x += w;
 
-        // 単語ならスペース相当を足す（日本語は足さない）
+        // 単語ならスペース分
         if has_spaces {
-            x += estimate_width(" ", font_size);
+            x += space_w;
         }
     }
 
     out
 }
 
-/// まずは係数で推定（次で fontdue 実測に置き換える）
-fn estimate_width(s: &str, font_size: f32) -> f32 {
+fn measure_width_fontdue(font: &Font, s: &str, px: f32) -> f32 {
     let mut w = 0.0;
     for ch in s.chars() {
-        // ASCIIは細め、CJKは太め
-        if ch.is_ascii() {
-            w += font_size * 0.6;
-        } else {
-            w += font_size * 1.0;
-        }
+        let m = font.metrics(ch, px);
+        w += m.advance_width;
     }
     w
 }
+
