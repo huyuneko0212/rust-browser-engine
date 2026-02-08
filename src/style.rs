@@ -95,7 +95,7 @@ pub fn style_tree(root: dom::Node, stylesheet: &css::Stylesheet) -> StyledNode {
 fn matches_rule(ed: &dom::ElementData, rule: &css::Rule) -> bool {
     // selector: Vec<Selector> だけど、ここでは "tag名" だけ見る
     // 例：body { ... } / h1 { ... }
-    for sel in &rule.selector {
+    for sel in &rule.selectors {
         if sel.simple == ed.tag_name {
             return true;
         }

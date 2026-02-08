@@ -91,47 +91,126 @@ impl LayoutBox {
         self.calculate_block_height();
     }
 
-    fn calculate_block_model(&mut self, _containing: Dimensions) {
-        // style参照はここで終わらせる（= 値をローカルにコピーする）
-        let (mut ml, mut mr, mut mt, mut mb, mut pl, mut pr, mut pt, mut pb, margin_sh, padding_sh) =
-            if let Some(style) = self.get_style_node() {
-                (
-                    style.lookup_px("margin-left"),
-                    style.lookup_px("margin-right"),
-                    style.lookup_px("margin-top"),
-                    style.lookup_px("margin-bottom"),
-                    style.lookup_px("padding-left"),
-                    style.lookup_px("padding-right"),
-                    style.lookup_px("padding-top"),
-                    style.lookup_px("padding-bottom"),
-                    style.value("margin").cloned(),
-                    style.value("padding").cloned(),
-                )
-            } else {
-                (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, None, None)
-            };
+    /// margin/padding を style から読む
+    /// - px / vw / vh / % 対応
+    /// - shorthand（1〜4値）対応
+    /// - auto は left/right のみ扱う（中央寄せ用）
+    fn calculate_block_model(&mut self, containing: Dimensions) {
+        let viewport_w = containing.content.width;
+        let viewport_h = containing.content.height.max(1.0);
+        let parent_w = containing.content.width;
 
-        // shorthand margin
-        if ml == 0.0 && mr == 0.0 && mt == 0.0 && mb == 0.0 {
-            if let Some(m) = margin_sh.as_deref().and_then(parse_4px) {
-                mt = m.0;
-                mr = m.1;
-                mb = m.2;
-                ml = m.3;
+        // 借用衝突を避ける：style値は先に全部ローカルへ
+        let (
+            ml_s, mr_s, mt_s, mb_s,
+            pl_s, pr_s, pt_s, pb_s,
+            margin_sh, padding_sh
+        ) = if let Some(style) = self.get_style_node() {
+            (
+                style.value("margin-left").cloned(),
+                style.value("margin-right").cloned(),
+                style.value("margin-top").cloned(),
+                style.value("margin-bottom").cloned(),
+                style.value("padding-left").cloned(),
+                style.value("padding-right").cloned(),
+                style.value("padding-top").cloned(),
+                style.value("padding-bottom").cloned(),
+                style.value("margin").cloned(),
+                style.value("padding").cloned(),
+            )
+        } else {
+            (None,None,None,None, None,None,None,None, None,None)
+        };
+
+        // default 0
+        let mut ml = 0.0;
+        let mut mr = 0.0;
+        let mut mt = 0.0;
+        let mut mb = 0.0;
+        let mut pl = 0.0;
+        let mut pr = 0.0;
+        let mut pt = 0.0;
+        let mut pb = 0.0;
+
+        // auto flags（左右だけ）
+        let mut ml_auto = false;
+        let mut mr_auto = false;
+
+        // 個別指定を優先
+        if let Some(v) = ml_s.as_deref() {
+            if v.trim() == "auto" { ml_auto = true; } else {
+                ml = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+            }
+        }
+        if let Some(v) = mr_s.as_deref() {
+            if v.trim() == "auto" { mr_auto = true; } else {
+                mr = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+            }
+        }
+        if let Some(v) = mt_s.as_deref() {
+            mt = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+        }
+        if let Some(v) = mb_s.as_deref() {
+            mb = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+        }
+
+        if let Some(v) = pl_s.as_deref() {
+            pl = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+        }
+        if let Some(v) = pr_s.as_deref() {
+            pr = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+        }
+        if let Some(v) = pt_s.as_deref() {
+            pt = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+        }
+        if let Some(v) = pb_s.as_deref() {
+            pb = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+        }
+
+        // shorthand margin（個別指定が無い場合にのみ入れる）
+        if ml_s.is_none() && mr_s.is_none() && mt_s.is_none() && mb_s.is_none() {
+            if let Some(sh) = margin_sh.as_deref() {
+                let m = parse_4len(sh);
+                // top right bottom left
+                if let Some(top) = m.0.as_deref() {
+                    mt = parse_length(top, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                }
+                if let Some(right) = m.1.as_deref() {
+                    if right.trim() == "auto" { mr_auto = true; } else {
+                        mr = parse_length(right, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                    }
+                }
+                if let Some(bottom) = m.2.as_deref() {
+                    mb = parse_length(bottom, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                }
+                if let Some(left) = m.3.as_deref() {
+                    if left.trim() == "auto" { ml_auto = true; } else {
+                        ml = parse_length(left, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                    }
+                }
             }
         }
 
         // shorthand padding
-        if pl == 0.0 && pr == 0.0 && pt == 0.0 && pb == 0.0 {
-            if let Some(p) = padding_sh.as_deref().and_then(parse_4px) {
-                pt = p.0;
-                pr = p.1;
-                pb = p.2;
-                pl = p.3;
+        if pl_s.is_none() && pr_s.is_none() && pt_s.is_none() && pb_s.is_none() {
+            if let Some(sh) = padding_sh.as_deref() {
+                let p = parse_4len(sh);
+                if let Some(top) = p.0.as_deref() {
+                    pt = parse_length(top, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                }
+                if let Some(right) = p.1.as_deref() {
+                    pr = parse_length(right, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                }
+                if let Some(bottom) = p.2.as_deref() {
+                    pb = parse_length(bottom, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                }
+                if let Some(left) = p.3.as_deref() {
+                    pl = parse_length(left, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                }
             }
         }
 
-        // ここから self.dimensions を書き換える（styleの借用はもう終わってる）
+        // 書き込み（styleの借用は終わってる）
         self.dimensions.margin.left = ml;
         self.dimensions.margin.right = mr;
         self.dimensions.margin.top = mt;
@@ -141,40 +220,100 @@ impl LayoutBox {
         self.dimensions.padding.right = pr;
         self.dimensions.padding.top = pt;
         self.dimensions.padding.bottom = pb;
+
+        // autoフラグは width計算後に使うので保存しておく（簡易：borderに埋めるのは嫌なので一旦 content.height に入れない）
+        // → ここでは何もしない。auto判定は calculate_block_width 内で再判定する（安全＆簡単）
     }
 
     fn calculate_block_width(&mut self, containing_block: Dimensions) {
-        // 先にstyleから width を取る（借用終了）
-        let specified_width_px = self
+        let viewport_w = containing_block.content.width;
+        let viewport_h = containing_block.content.height.max(1.0);
+        let parent_w = containing_block.content.width;
+
+        // width指定を先に取得（借用終了）
+        let width_str = self
             .get_style_node()
             .and_then(|s| s.value("width"))
-            .and_then(|v| parse_px(v));
+            .cloned();
 
-        // ここから mutable 参照OK
+        // margin:auto 判定（個別 or shorthand）
+        let (ml_auto, mr_auto) = self
+            .get_style_node()
+            .map(|s| {
+                let mut la = s.value("margin-left").map(|v| v.trim() == "auto").unwrap_or(false);
+                let mut ra = s.value("margin-right").map(|v| v.trim() == "auto").unwrap_or(false);
+
+                // shorthand margin: "15vh auto" みたいなのも拾う
+                if (!la || !ra) && s.value("margin-left").is_none() && s.value("margin-right").is_none() {
+                    if let Some(m) = s.value("margin") {
+                        let m4 = parse_4len(m);
+                        if let Some(r) = m4.1.as_deref() {
+                            if r.trim() == "auto" { ra = true; }
+                        }
+                        if let Some(l) = m4.3.as_deref() {
+                            if l.trim() == "auto" { la = true; }
+                        }
+                    }
+                }
+                (la, ra)
+            })
+            .unwrap_or((false, false));
+
+        // ここから mutable OK
         let d = &mut self.dimensions;
 
-        if let Some(w) = specified_width_px {
-            d.content.width = w;
-            return;
+        // width指定があればそれを使う（vw/vh/%/px）
+        if let Some(ws) = width_str.as_deref() {
+            if let Some(w) = parse_length(ws, parent_w, viewport_w, viewport_h) {
+                d.content.width = w.max(0.0);
+            }
         }
 
-        let available = containing_block.content.width
-            - d.margin.left
-            - d.margin.right
-            - d.padding.left
-            - d.padding.right
-            - d.border.left
-            - d.border.right;
+        // width指定が無いなら "親幅 - margin/padding" にする
+        if d.content.width == 0.0 {
+            let available = containing_block.content.width
+                - d.margin.left
+                - d.margin.right
+                - d.padding.left
+                - d.padding.right
+                - d.border.left
+                - d.border.right;
+            d.content.width = available.max(0.0);
+        }
 
-        d.content.width = available.max(0.0);
+        // ★ margin:auto の左右中央寄せ（最小実装）
+        if ml_auto || mr_auto {
+            let used = d.content.width
+                + d.padding.left + d.padding.right
+                + d.border.left + d.border.right;
+
+            let remaining = (containing_block.content.width - used).max(0.0);
+
+            if ml_auto && mr_auto {
+                d.margin.left = remaining / 2.0;
+                d.margin.right = remaining / 2.0;
+            } else if ml_auto {
+                d.margin.left = remaining;
+            } else if mr_auto {
+                d.margin.right = remaining;
+            }
+        }
     }
 
     fn calculate_block_position(&mut self, containing_block: Dimensions) {
         let d = &mut self.dimensions;
 
-        d.content.x = containing_block.content.x + d.margin.left + d.border.left + d.padding.left;
+        // x: parent + margin + border + padding
+        d.content.x = containing_block.content.x
+            + d.margin.left
+            + d.border.left
+            + d.padding.left;
 
-        d.content.y = containing_block.content.y + d.margin.top + d.border.top + d.padding.top;
+        // y: parent + (前の兄弟の積み上げ) は親が渡してくるので、ここでは margin/padding 分を足す
+        d.content.y = containing_block.content.y
+            + d.margin.top
+            + d.border.top
+            + d.padding.top;
     }
 
     fn layout_block_children(&mut self) {
@@ -185,6 +324,7 @@ impl LayoutBox {
             cb.content.x = self.dimensions.content.x;
             cb.content.y = y;
             cb.content.width = self.dimensions.content.width;
+            cb.content.height = self.dimensions.content.height.max(1.0); // vh用
 
             child.layout(cb);
 
@@ -195,11 +335,21 @@ impl LayoutBox {
     }
 
     fn calculate_block_height(&mut self) {
-        if let Some(style) = self.get_style_node() {
-            if let Some(h) = style.value("height").and_then(|s| parse_px(s)) {
-                self.dimensions.content.height = h;
+        // height指定があれば反映（px/vh/vw/%）
+        let (h_str, viewport_w, viewport_h, parent_w) = {
+            let vw = self.dimensions.content.width.max(1.0);
+            // viewportは親のviewとみなす（簡易）
+            (self.get_style_node().and_then(|s| s.value("height")).cloned(), vw, 600.0, vw)
+        };
+
+        if let Some(hs) = h_str.as_deref() {
+            if let Some(h) = parse_length(hs, parent_w, viewport_w, viewport_h) {
+                self.dimensions.content.height = h.max(0.0);
+                return;
             }
         }
+
+        // 何も指定がなければ children で決まる（layout_block_children が計算済み）
     }
 }
 
@@ -222,28 +372,42 @@ pub fn build_layout_tree(style_node: StyledNode) -> LayoutBox {
 
 // ---------------- helpers ----------------
 
-fn parse_px(s: &str) -> Option<f32> {
+/// px / vw / vh / % を解釈してピクセルにする
+fn parse_length(s: &str, containing: f32, viewport_w: f32, viewport_h: f32) -> Option<f32> {
     let t = s.trim();
+
     if t.ends_with("px") {
-        t.trim_end_matches("px").trim().parse::<f32>().ok()
-    } else {
-        None
+        return t.trim_end_matches("px").trim().parse::<f32>().ok();
     }
+    if t.ends_with("vw") {
+        let v: f32 = t.trim_end_matches("vw").trim().parse().ok()?;
+        return Some(viewport_w * (v / 100.0));
+    }
+    if t.ends_with("vh") {
+        let v: f32 = t.trim_end_matches("vh").trim().parse().ok()?;
+        return Some(viewport_h * (v / 100.0));
+    }
+    if t.ends_with('%') {
+        let v: f32 = t.trim_end_matches('%').trim().parse().ok()?;
+        return Some(containing * (v / 100.0));
+    }
+
+    None
 }
 
-// CSS 4-value shorthand: "top right bottom left"
-// 1個: all, 2個: vertical/horizontal, 3個: top/horizontal/bottom, 4個: TRBL
-fn parse_4px(s: &str) -> Option<(f32, f32, f32, f32)> {
+/// 4値 shorthand を “文字列のまま” 分解して返す（auto/px/vh/vw/%混在OK）
+/// 1個: all, 2個: vertical/horizontal, 3個: top/horizontal/bottom, 4個: TRBL
+fn parse_4len(s: &str) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
     let parts = s
         .split_whitespace()
-        .filter_map(|p| parse_px(p))
+        .map(|p| p.trim().to_string())
         .collect::<Vec<_>>();
 
     match parts.len() {
-        1 => Some((parts[0], parts[0], parts[0], parts[0])),
-        2 => Some((parts[0], parts[1], parts[0], parts[1])),
-        3 => Some((parts[0], parts[1], parts[2], parts[1])),
-        4 => Some((parts[0], parts[1], parts[2], parts[3])),
-        _ => None,
+        0 => (None, None, None, None),
+        1 => (Some(parts[0].clone()), Some(parts[0].clone()), Some(parts[0].clone()), Some(parts[0].clone())),
+        2 => (Some(parts[0].clone()), Some(parts[1].clone()), Some(parts[0].clone()), Some(parts[1].clone())),
+        3 => (Some(parts[0].clone()), Some(parts[1].clone()), Some(parts[2].clone()), Some(parts[1].clone())),
+        _ => (Some(parts[0].clone()), Some(parts[1].clone()), Some(parts[2].clone()), Some(parts[3].clone())),
     }
 }
