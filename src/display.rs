@@ -1,4 +1,4 @@
-use crate::layout::{BoxType, LayoutBox};
+use crate::layout::LayoutBox;
 
 #[derive(Debug, Clone)]
 pub enum DisplayItem {

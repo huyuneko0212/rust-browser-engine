@@ -101,26 +101,23 @@ impl LayoutBox {
         let parent_w = containing.content.width;
 
         // 借用衝突を避ける：style値は先に全部ローカルへ
-        let (
-            ml_s, mr_s, mt_s, mb_s,
-            pl_s, pr_s, pt_s, pb_s,
-            margin_sh, padding_sh
-        ) = if let Some(style) = self.get_style_node() {
-            (
-                style.value("margin-left").cloned(),
-                style.value("margin-right").cloned(),
-                style.value("margin-top").cloned(),
-                style.value("margin-bottom").cloned(),
-                style.value("padding-left").cloned(),
-                style.value("padding-right").cloned(),
-                style.value("padding-top").cloned(),
-                style.value("padding-bottom").cloned(),
-                style.value("margin").cloned(),
-                style.value("padding").cloned(),
-            )
-        } else {
-            (None,None,None,None, None,None,None,None, None,None)
-        };
+        let (ml_s, mr_s, mt_s, mb_s, pl_s, pr_s, pt_s, pb_s, margin_sh, padding_sh) =
+            if let Some(style) = self.get_style_node() {
+                (
+                    style.value("margin-left").cloned(),
+                    style.value("margin-right").cloned(),
+                    style.value("margin-top").cloned(),
+                    style.value("margin-bottom").cloned(),
+                    style.value("padding-left").cloned(),
+                    style.value("padding-right").cloned(),
+                    style.value("padding-top").cloned(),
+                    style.value("padding-bottom").cloned(),
+                    style.value("margin").cloned(),
+                    style.value("padding").cloned(),
+                )
+            } else {
+                (None, None, None, None, None, None, None, None, None, None)
+            };
 
         // default 0
         let mut ml = 0.0;
@@ -132,18 +129,14 @@ impl LayoutBox {
         let mut pt = 0.0;
         let mut pb = 0.0;
 
-        // auto flags（左右だけ）
-        let mut ml_auto = false;
-        let mut mr_auto = false;
-
-        // 個別指定を優先
+        // 個別指定を優先（auto はこの関数では 0 扱いにする）
         if let Some(v) = ml_s.as_deref() {
-            if v.trim() == "auto" { ml_auto = true; } else {
+            if v.trim() != "auto" {
                 ml = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
             }
         }
         if let Some(v) = mr_s.as_deref() {
-            if v.trim() == "auto" { mr_auto = true; } else {
+            if v.trim() != "auto" {
                 mr = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
             }
         }
@@ -176,7 +169,7 @@ impl LayoutBox {
                     mt = parse_length(top, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
                 }
                 if let Some(right) = m.1.as_deref() {
-                    if right.trim() == "auto" { mr_auto = true; } else {
+                    if right.trim() != "auto" {
                         mr = parse_length(right, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
                     }
                 }
@@ -184,17 +177,18 @@ impl LayoutBox {
                     mb = parse_length(bottom, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
                 }
                 if let Some(left) = m.3.as_deref() {
-                    if left.trim() == "auto" { ml_auto = true; } else {
+                    if left.trim() != "auto" {
                         ml = parse_length(left, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
                     }
                 }
             }
         }
 
-        // shorthand padding
+        // shorthand padding（個別指定が無い場合にのみ入れる）
         if pl_s.is_none() && pr_s.is_none() && pt_s.is_none() && pb_s.is_none() {
             if let Some(sh) = padding_sh.as_deref() {
                 let p = parse_4len(sh);
+                // top right bottom left
                 if let Some(top) = p.0.as_deref() {
                     pt = parse_length(top, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
                 }
@@ -210,7 +204,7 @@ impl LayoutBox {
             }
         }
 
-        // 書き込み（styleの借用は終わってる）
+        // ここで dimensions に反映
         self.dimensions.margin.left = ml;
         self.dimensions.margin.right = mr;
         self.dimensions.margin.top = mt;
@@ -220,9 +214,6 @@ impl LayoutBox {
         self.dimensions.padding.right = pr;
         self.dimensions.padding.top = pt;
         self.dimensions.padding.bottom = pb;
-
-        // autoフラグは width計算後に使うので保存しておく（簡易：borderに埋めるのは嫌なので一旦 content.height に入れない）
-        // → ここでは何もしない。auto判定は calculate_block_width 内で再判定する（安全＆簡単）
     }
 
     fn calculate_block_width(&mut self, containing_block: Dimensions) {
@@ -240,18 +231,31 @@ impl LayoutBox {
         let (ml_auto, mr_auto) = self
             .get_style_node()
             .map(|s| {
-                let mut la = s.value("margin-left").map(|v| v.trim() == "auto").unwrap_or(false);
-                let mut ra = s.value("margin-right").map(|v| v.trim() == "auto").unwrap_or(false);
+                let mut la = s
+                    .value("margin-left")
+                    .map(|v| v.trim() == "auto")
+                    .unwrap_or(false);
+                let mut ra = s
+                    .value("margin-right")
+                    .map(|v| v.trim() == "auto")
+                    .unwrap_or(false);
 
                 // shorthand margin: "15vh auto" みたいなのも拾う
-                if (!la || !ra) && s.value("margin-left").is_none() && s.value("margin-right").is_none() {
+                if (!la || !ra)
+                    && s.value("margin-left").is_none()
+                    && s.value("margin-right").is_none()
+                {
                     if let Some(m) = s.value("margin") {
                         let m4 = parse_4len(m);
                         if let Some(r) = m4.1.as_deref() {
-                            if r.trim() == "auto" { ra = true; }
+                            if r.trim() == "auto" {
+                                ra = true;
+                            }
                         }
                         if let Some(l) = m4.3.as_deref() {
-                            if l.trim() == "auto" { la = true; }
+                            if l.trim() == "auto" {
+                                la = true;
+                            }
                         }
                     }
                 }
@@ -283,9 +287,8 @@ impl LayoutBox {
 
         // ★ margin:auto の左右中央寄せ（最小実装）
         if ml_auto || mr_auto {
-            let used = d.content.width
-                + d.padding.left + d.padding.right
-                + d.border.left + d.border.right;
+            let used =
+                d.content.width + d.padding.left + d.padding.right + d.border.left + d.border.right;
 
             let remaining = (containing_block.content.width - used).max(0.0);
 
@@ -304,16 +307,10 @@ impl LayoutBox {
         let d = &mut self.dimensions;
 
         // x: parent + margin + border + padding
-        d.content.x = containing_block.content.x
-            + d.margin.left
-            + d.border.left
-            + d.padding.left;
+        d.content.x = containing_block.content.x + d.margin.left + d.border.left + d.padding.left;
 
         // y: parent + (前の兄弟の積み上げ) は親が渡してくるので、ここでは margin/padding 分を足す
-        d.content.y = containing_block.content.y
-            + d.margin.top
-            + d.border.top
-            + d.padding.top;
+        d.content.y = containing_block.content.y + d.margin.top + d.border.top + d.padding.top;
     }
 
     fn layout_block_children(&mut self) {
@@ -339,7 +336,14 @@ impl LayoutBox {
         let (h_str, viewport_w, viewport_h, parent_w) = {
             let vw = self.dimensions.content.width.max(1.0);
             // viewportは親のviewとみなす（簡易）
-            (self.get_style_node().and_then(|s| s.value("height")).cloned(), vw, 600.0, vw)
+            (
+                self.get_style_node()
+                    .and_then(|s| s.value("height"))
+                    .cloned(),
+                vw,
+                600.0,
+                vw,
+            )
         };
 
         if let Some(hs) = h_str.as_deref() {
@@ -397,7 +401,14 @@ fn parse_length(s: &str, containing: f32, viewport_w: f32, viewport_h: f32) -> O
 
 /// 4値 shorthand を “文字列のまま” 分解して返す（auto/px/vh/vw/%混在OK）
 /// 1個: all, 2個: vertical/horizontal, 3個: top/horizontal/bottom, 4個: TRBL
-fn parse_4len(s: &str) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
+fn parse_4len(
+    s: &str,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
     let parts = s
         .split_whitespace()
         .map(|p| p.trim().to_string())
@@ -405,9 +416,29 @@ fn parse_4len(s: &str) -> (Option<String>, Option<String>, Option<String>, Optio
 
     match parts.len() {
         0 => (None, None, None, None),
-        1 => (Some(parts[0].clone()), Some(parts[0].clone()), Some(parts[0].clone()), Some(parts[0].clone())),
-        2 => (Some(parts[0].clone()), Some(parts[1].clone()), Some(parts[0].clone()), Some(parts[1].clone())),
-        3 => (Some(parts[0].clone()), Some(parts[1].clone()), Some(parts[2].clone()), Some(parts[1].clone())),
-        _ => (Some(parts[0].clone()), Some(parts[1].clone()), Some(parts[2].clone()), Some(parts[3].clone())),
+        1 => (
+            Some(parts[0].clone()),
+            Some(parts[0].clone()),
+            Some(parts[0].clone()),
+            Some(parts[0].clone()),
+        ),
+        2 => (
+            Some(parts[0].clone()),
+            Some(parts[1].clone()),
+            Some(parts[0].clone()),
+            Some(parts[1].clone()),
+        ),
+        3 => (
+            Some(parts[0].clone()),
+            Some(parts[1].clone()),
+            Some(parts[2].clone()),
+            Some(parts[1].clone()),
+        ),
+        _ => (
+            Some(parts[0].clone()),
+            Some(parts[1].clone()),
+            Some(parts[2].clone()),
+            Some(parts[3].clone()),
+        ),
     }
 }

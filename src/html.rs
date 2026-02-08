@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use crate::dom::*;
+use std::collections::HashMap;
 
 pub fn parse(source: String) -> Node {
     let mut parser = Parser::new(source);
@@ -9,12 +10,7 @@ pub fn parse(source: String) -> Node {
     if nodes.len() == 1 {
         nodes.into_iter().next().unwrap()
     } else {
-        Node {
-            children: nodes,
-            node_type: NodeType::Element(ElementData {
-                tag_name: "html".to_string(),
-            }),
-        }
+        elem("html".to_string(), HashMap::new(), nodes)
     }
 }
 
@@ -28,16 +24,16 @@ impl Parser {
         Self { pos: 0, input }
     }
 
+    fn eof(&self) -> bool {
+        self.pos >= self.input.len()
+    }
+
     fn next_char(&self) -> char {
         self.input[self.pos..].chars().next().unwrap_or('\0')
     }
 
     fn starts_with(&self, s: &str) -> bool {
         self.input[self.pos..].starts_with(s)
-    }
-
-    fn eof(&self) -> bool {
-        self.pos >= self.input.len()
     }
 
     fn consume_char(&mut self) -> char {
@@ -79,7 +75,6 @@ impl Parser {
         self.consume_while(|c| c.is_alphanumeric())
     }
 
-    /// "<tag ...>" の tag 名だけ覗く（posは進めない）
     fn peek_start_tag_name(&self) -> Option<String> {
         let s = &self.input[self.pos..];
         if !s.starts_with('<') {
@@ -89,7 +84,7 @@ impl Parser {
             return None;
         }
 
-        let mut idx = 1usize; // '<' の次
+        let mut idx = 1usize;
         let mut name = String::new();
         while idx < s.len() {
             let ch = s[idx..].chars().next().unwrap();
@@ -104,14 +99,13 @@ impl Parser {
         if name.is_empty() { None } else { Some(name) }
     }
 
-    /// "</tag ...>" の tag 名だけ覗く（posは進めない）
     fn peek_end_tag_name(&self) -> Option<String> {
         let s = &self.input[self.pos..];
         if !s.starts_with("</") {
             return None;
         }
 
-        let mut idx = 2usize; // "</" の次
+        let mut idx = 2usize;
         let mut name = String::new();
         while idx < s.len() {
             let ch = s[idx..].chars().next().unwrap();
@@ -127,11 +121,8 @@ impl Parser {
     }
 
     fn parse_text(&mut self) -> Node {
-        let text = self.consume_while(|c| c != '<');
-        Node {
-            children: vec![],
-            node_type: NodeType::Text(text),
-        }
+        let t = self.consume_while(|c| c != '<');
+        text(decode_entities(&t))
     }
 
     fn parse_node(&mut self) -> Node {
@@ -140,7 +131,7 @@ impl Parser {
             if self.starts_with("<!") {
                 self.consume_while(|c| c != '>');
                 if !self.eof() {
-                    self.consume_char(); // '>'
+                    self.consume_char();
                 }
                 self.consume_whitespace();
                 return self.parse_node();
@@ -150,77 +141,12 @@ impl Parser {
         self.parse_text()
     }
 
-    fn parse_element(&mut self) -> Node {
-        // "<"
-        assert!(self.consume_char() == '<');
-
-        let tag_name = self.parse_tag_name();
-
-        // 属性は今は無視： '>' まで読み飛ばす
-        self.consume_while(|c| c != '>');
-        if !self.eof() {
-            self.consume_char(); // '>'
-        }
-
-        if tag_name == "script" || tag_name == "style" {
-            let text = self.consume_raw_text_until_end_tag(&tag_name);
-            return Node {
-                children: vec![Node {
-                    children: vec![],
-                    node_type: NodeType::Text(text),
-                }],
-                node_type: NodeType::Element(ElementData { tag_name }),
-            };
-        }
-
-        // Voidタグ（閉じタグなし）
-        let void_tags = [
-            "meta", "img", "br", "hr", "input", "link", "area", "base", "col", "embed", "param",
-            "source", "track", "wbr",
-        ];
-        if void_tags.contains(&tag_name.as_str()) {
-            return Node {
-                children: vec![],
-                node_type: NodeType::Element(ElementData { tag_name }),
-            };
-        }
-
-        // ★子ノードを読む（parent_tag を渡す）
-        let children = self.parse_nodes(Some(&tag_name));
-
-        // ★閉じタグがあれば消費（HTMLは壊れてても前に進む）
-        if self.starts_with("</") {
-            // "</"
-            self.consume_char(); // '<'
-            self.consume_char(); // '/'
-
-            let end_tag = self.parse_tag_name();
-
-            // ">" まで飛ばす
-            self.consume_while(|c| c != '>');
-            if !self.eof() {
-                self.consume_char(); // '>'
-            }
-
-            if tag_name != end_tag {
-                // HTMLでは普通に起こるのでログだけ
-                println!("tag mismatch {} {}", tag_name, end_tag);
-            }
-        }
-
-        Node {
-            children,
-            node_type: NodeType::Element(ElementData { tag_name }),
-        }
-    }
-
     fn consume_raw_text_until_end_tag(&mut self, tag: &str) -> String {
         let end = format!("</{}>", tag);
         let mut out = String::new();
 
         while !self.eof() {
             if self.input[self.pos..].starts_with(&end) {
-                // consume "</tag>"
                 for _ in 0..end.chars().count() {
                     self.consume_char();
                 }
@@ -231,7 +157,126 @@ impl Parser {
         out
     }
 
-    /// parent_tag を見て “暗黙閉じ” を入れる
+    // -----------------------------
+    // ✅ attributes パース
+    // -----------------------------
+    fn parse_attributes(&mut self) -> HashMap<String, String> {
+        let mut attrs = HashMap::new();
+
+        loop {
+            self.consume_whitespace();
+
+            if self.eof() {
+                break;
+            }
+
+            let c = self.next_char();
+            if c == '>' || c == '/' {
+                break;
+            }
+
+            // key
+            let key = self.consume_while(|ch| ch.is_alphanumeric() || ch == '-' || ch == '_');
+            if key.is_empty() {
+                // 変な文字なら1文字食って抜ける
+                self.consume_char();
+                continue;
+            }
+
+            self.consume_whitespace();
+
+            // keyだけ（disabled 等）
+            if self.next_char() != '=' {
+                attrs.insert(key, "".to_string());
+                continue;
+            }
+
+            self.consume_char(); // '='
+            self.consume_whitespace();
+
+            // value（"..." / '...' / bare）
+            let value = match self.next_char() {
+                '"' => {
+                    self.consume_char();
+                    let v = self.consume_while(|ch| ch != '"');
+                    if self.next_char() == '"' {
+                        self.consume_char();
+                    }
+                    v
+                }
+                '\'' => {
+                    self.consume_char();
+                    let v = self.consume_while(|ch| ch != '\'');
+                    if self.next_char() == '\'' {
+                        self.consume_char();
+                    }
+                    v
+                }
+                _ => self.consume_while(|ch| !ch.is_whitespace() && ch != '>'),
+            };
+
+            attrs.insert(key, value);
+        }
+
+        attrs
+    }
+
+    fn parse_element(&mut self) -> Node {
+        assert!(self.consume_char() == '<');
+        let tag_name = self.parse_tag_name();
+
+        // ✅ 属性
+        let attrs = self.parse_attributes();
+
+        // self-closing: "/>"
+        let mut self_closing = false;
+        if self.next_char() == '/' {
+            self_closing = true;
+            self.consume_char();
+        }
+
+        // '>'
+        self.consume_while(|c| c != '>');
+        if !self.eof() {
+            self.consume_char();
+        }
+
+        // Voidタグ（閉じタグなし）
+        let void_tags = [
+            "meta", "img", "br", "hr", "input", "link", "area", "base", "col", "embed", "param",
+            "source", "track", "wbr",
+        ];
+        if self_closing || void_tags.contains(&tag_name.as_str()) {
+            return elem(tag_name, attrs, vec![]);
+        }
+
+        // raw text element: script/style は “中身をHTMLとして解析しない”
+        if tag_name == "script" || tag_name == "style" {
+            let raw = self.consume_raw_text_until_end_tag(&tag_name);
+            return elem(tag_name, attrs, vec![text(raw)]);
+        }
+
+        let children = self.parse_nodes(Some(&tag_name));
+
+        // 閉じタグ消費（壊れてても進む）
+        if self.starts_with("</") {
+            self.consume_char(); // <
+            self.consume_char(); // /
+            let end_tag = self.parse_tag_name();
+
+            self.consume_while(|c| c != '>');
+            if !self.eof() {
+                self.consume_char(); // >
+            }
+
+            if tag_name != end_tag {
+                println!("tag mismatch {} {}", tag_name, end_tag);
+            }
+        }
+
+        elem(tag_name, attrs, children)
+    }
+
     pub fn parse_nodes(&mut self, parent_tag: Option<&str>) -> Vec<Node> {
         let mut nodes = vec![];
 
@@ -242,9 +287,7 @@ impl Parser {
                 break;
             }
 
-            // 明示的な閉じタグが来たら親に任せる
             if self.starts_with("</") {
-                // --- 暗黙閉じの強化 ---
                 // body の中で </html> が来たら bodyは閉じた扱い
                 if parent_tag == Some("body") {
                     if let Some(end) = self.peek_end_tag_name() {
@@ -261,33 +304,13 @@ impl Parser {
                         }
                     }
                 }
-
                 break;
             }
 
-            // --- HTMLらしさ（最低限） ---
             // <p> の中でブロック要素が来たら </p> 省略とみなす
             if parent_tag == Some("p") && self.next_char() == '<' {
                 if let Some(next_tag) = self.peek_start_tag_name() {
                     if is_block_tag(&next_tag) {
-                        break;
-                    }
-                }
-            }
-
-            // body の中で <html> / <body> が来たら（壊れHTML対策）body閉じ
-            if parent_tag == Some("body") && self.next_char() == '<' {
-                if let Some(next_tag) = self.peek_start_tag_name() {
-                    if next_tag == "html" || next_tag == "body" {
-                        break;
-                    }
-                }
-            }
-
-            // html の中で <html> が来たら html閉じ（壊れHTML対策）
-            if parent_tag == Some("html") && self.next_char() == '<' {
-                if let Some(next_tag) = self.peek_start_tag_name() {
-                    if next_tag == "html" {
                         break;
                     }
                 }
@@ -303,27 +326,76 @@ impl Parser {
 fn is_block_tag(tag: &str) -> bool {
     matches!(
         tag,
-        "html"
-            | "body"
-            | "div"
-            | "p"
-            | "h1"
-            | "h2"
-            | "h3"
-            | "h4"
-            | "h5"
-            | "h6"
-            | "ul"
-            | "ol"
-            | "li"
-            | "section"
-            | "header"
-            | "footer"
-            | "main"
-            | "article"
-            | "nav"
-            | "table"
-            | "form"
-            | "pre"
+        "html" | "body" | "div" | "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol"
+            | "li" | "section" | "header" | "footer" | "main" | "article" | "nav" | "table"
+            | "form" | "pre"
     )
 }
+fn decode_entities(input: &str) -> String {
+    // "&...;" を見つけたら置換していく（最小実装）
+    let mut out = String::with_capacity(input.len());
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        if chars[i] == '&' {
+            // 次の ';' を探す（最大で 32 文字くらいまで）
+            let mut j = i + 1;
+            let mut found = None;
+            while j < chars.len() && j - i <= 32 {
+                if chars[j] == ';' {
+                    found = Some(j);
+                    break;
+                }
+                j += 1;
+            }
+
+            if let Some(end) = found {
+                let entity: String = chars[i + 1..end].iter().collect();
+                if let Some(decoded) = decode_one_entity(&entity) {
+                    out.push_str(&decoded);
+                    i = end + 1;
+                    continue;
+                }
+                // デコードできなかったらそのまま出す
+                out.push('&');
+                i += 1;
+                continue;
+            }
+        }
+
+        out.push(chars[i]);
+        i += 1;
+    }
+
+    out
+}
+
+fn decode_one_entity(entity: &str) -> Option<String> {
+    // named entities（最小）
+    match entity {
+        "amp" => return Some("&".to_string()),
+        "lt" => return Some("<".to_string()),
+        "gt" => return Some(">".to_string()),
+        "quot" => return Some("\"".to_string()),
+        "apos" => return Some("'".to_string()),
+        "nbsp" => return Some("\u{00A0}".to_string()),
+        _ => {}
+    }
+
+    // numeric entities: &#1234; / &#x1F600;
+    if let Some(num) = entity.strip_prefix('#') {
+        if let Some(hex) = num.strip_prefix('x').or_else(|| num.strip_prefix('X')) {
+            // hex
+            let v = u32::from_str_radix(hex, 16).ok()?;
+            return char::from_u32(v).map(|c| c.to_string());
+        } else {
+            // decimal
+            let v = num.parse::<u32>().ok()?;
+            return char::from_u32(v).map(|c| c.to_string());
+        }
+    }
+
+    None
+}
+
