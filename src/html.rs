@@ -136,4 +136,20 @@ impl Parser {
 
         self.parse_text()
     }
+    
 }
+pub fn parse(source: String) -> Node {
+        let mut parser = Parser::new(source);
+        let nodes = parser.parse_nodes();
+
+        if nodes.len() == 1 {
+            nodes.into_iter().next().unwrap()
+        } else {
+            Node {
+                children: nodes,
+                node_type: NodeType::Element(ElementData {
+                    tag_name: "html".to_string(),
+                }),
+            }
+        }
+    }

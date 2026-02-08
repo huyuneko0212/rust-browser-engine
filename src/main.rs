@@ -1,44 +1,72 @@
-mod dom;
+use std::env;
+
 mod url;
 mod http;
-mod show;
 mod html;
+mod dom;
 mod css;
-// use url::URL;
-use css::Parser as CssParser;
-// use crate::html::Parser;
+mod style;
+mod show;
+
+use url::URL;
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    // -------------------------------
+    // 引数取得
+    // -------------------------------
+    let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
-        println!("usage: cargo run https://example.org");
+        println!("usage: cargo run <url>");
         return;
     }
 
-    // let url = URL::new(&args[1]);
-    // let response = http::request(&url);
-    // let html = response.body;
-    // let mut parser = Parser::new(html);
-    // let nodes = parser.parse_nodes();
-    // println!("{:#?}", nodes);
+    let url_str = &args[1];
+    let url = URL::new(url_str);
 
-//     println!("status: {}",response.status_code);
-//     println!("--- headers ---");
-//     for (k, v) in &response.headers {
-//         println!("{}: {}", k, v);
-//     }
-// println!("--------------");
-    // show::show(&response.body);
-    let css = "
-        h1 { color: red; font-size: 20px; }
+    println!("fetching: {}", url_str);
+
+    // -------------------------------
+    // HTML取得
+    // -------------------------------
+    let response = http::request(&url);
+    let body = response.body;
+
+    println!("---- HTML取得完了 ----");
+
+    // -------------------------------
+    // CSS文字列（仮）
+    // ※まだ <style> 抽出してないから固定
+    // -------------------------------
+    let css_string = "
+        h1 { color: red; }
         p { color: blue; }
-    ";
+        div { color: green; }
+    ".to_string();
 
-    let mut parser = CssParser::new(css.to_string());
-    println!("1");
-    let stylesheet = parser.parse_stylesheet();
-    println!("2");
+    println!("---- CSSパース開始 ----");
 
-    println!("{:#?}", stylesheet);
+    // -------------------------------
+    // DOM構築
+    // -------------------------------
+    let dom = html::parse(body);
+
+    println!("---- DOM構築完了 ----");
+
+    // -------------------------------
+    // CSSパース
+    // -------------------------------
+    let stylesheet = css::Parser::new(css_string).parse_stylesheet();
+
+    println!("---- CSS構築完了 ----");
+
+    // -------------------------------
+    // Style tree生成（神工程）
+    // -------------------------------
+    let styled_root = style::style_tree(dom, &stylesheet);
+
+    println!("---- STYLE TREE ----");
+    println!("{:#?}", styled_root);
+
+    println!("---- 完了 ----");
 }
