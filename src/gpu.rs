@@ -124,7 +124,9 @@ pub struct GPU<'a> {
 
     // glyph atlas
     atlas_tex: Texture,
+    #[allow(dead_code)]
     atlas_view: TextureView,
+    #[allow(dead_code)]
     atlas_sampler: Sampler,
     atlas_bind_group: BindGroup,
     atlas_size: u32,
