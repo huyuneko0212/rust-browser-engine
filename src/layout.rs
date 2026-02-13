@@ -432,11 +432,14 @@ impl LayoutBox {
                         let lh = line_height_px(sn, fs);
                         match &sn.node.node_type {
                             crate::dom::NodeType::Text(t) => {
-                                let s = t.trim();
-                                if s.is_empty() {
-                                    (true, None, fs, lh)
+                                // ★空白を1個に畳む（HTMLの基本）
+                                let collapsed = collapse_whitespace(t);
+
+                                // 目に見える文字が無ければ「空白1個」扱い（幅は取る）
+                                if collapsed.trim().is_empty() {
+                                    (true, Some(" ".to_string()), fs, lh)
                                 } else {
-                                    (true, Some(s.to_string()), fs, lh)
+                                    (true, Some(collapsed.trim().to_string()), fs, lh)
                                 }
                             }
                             _ => (false, None, fs, lh),
@@ -447,19 +450,56 @@ impl LayoutBox {
 
                     if is_text {
                         if let Some(txt) = text {
+                            let is_space_only = txt == " ";
+
+                            // ★行頭のスペースは捨てる（ブラウザっぽい）
+                            if is_space_only && (*cursor_x == start_x) {
+                                node.dimensions.content.x = *cursor_x;
+                                node.dimensions.content.y = *cursor_y;
+                                node.dimensions.content.width = 0.0;
+                                node.dimensions.content.height = 0.0;
+                                return;
+                            }
+
+                            // 幅を測る（スペースも advance を取る）
                             let w = measure_width_fontdue(font, &txt, font_size);
                             let h = line_h;
 
-                            // 折り返し
-                            if *cursor_x > start_x && *cursor_x + w > start_x + max_w {
+                            // 折り返し：次の行に送る（ただし空白だけなら折返しのトリガにしない）
+                            if !is_space_only
+                                && *cursor_x > start_x
+                                && *cursor_x + w > start_x + max_w
+                            {
                                 *cursor_x = start_x;
                                 *cursor_y += (*current_line_h).max(h);
                                 *current_line_h = 0.0;
+
+                                // ★折り返し直後の空白は捨てる
+                                if is_space_only {
+                                    node.dimensions.content.x = *cursor_x;
+                                    node.dimensions.content.y = *cursor_y;
+                                    node.dimensions.content.width = 0.0;
+                                    node.dimensions.content.height = 0.0;
+                                    return;
+                                }
                             }
 
+                            // ★空白は「幅だけ進める」：box自体は0（displayで描かない前提）
+                            if is_space_only {
+                                node.dimensions.content.x = *cursor_x;
+                                node.dimensions.content.y = *cursor_y;
+                                node.dimensions.content.width = 0.0;
+                                node.dimensions.content.height = 0.0;
+
+                                *cursor_x += w;
+                                *current_line_h = (*current_line_h).max(h);
+                                return;
+                            }
+
+                            // 通常テキスト
                             node.dimensions.content.x = *cursor_x;
                             node.dimensions.content.y = *cursor_y;
-                            node.dimensions.content.width = w.max(1.0);
+                            node.dimensions.content.width = w.max(0.0);
                             node.dimensions.content.height = h;
 
                             *cursor_x += w;
@@ -492,8 +532,7 @@ impl LayoutBox {
                     }
                 }
                 BoxType::BlockNode(_) | BoxType::Anonymous => {
-                    // IFC の中に block が来る想定は build_layout_tree で避ける。
-                    // 念のため：block は次の行から始める
+                    // block は次の行から始める
                     if *cursor_x > start_x {
                         *cursor_x = start_x;
                         *cursor_y += (*current_line_h).max(18.0);
@@ -744,4 +783,22 @@ fn measure_width_fontdue(font: &Font, s: &str, px: f32) -> f32 {
         w += font.metrics(ch, px).advance_width;
     }
     w
+}
+
+fn collapse_whitespace(s: &str) -> String {
+    let mut out = String::new();
+    let mut prev_space = false;
+
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            if !prev_space {
+                out.push(' ');
+                prev_space = true;
+            }
+        } else {
+            out.push(ch);
+            prev_space = false;
+        }
+    }
+    out
 }
