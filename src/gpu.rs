@@ -18,7 +18,11 @@ impl RectVertex {
             array_stride: std::mem::size_of::<RectVertex>() as BufferAddress,
             step_mode: VertexStepMode::Vertex,
             attributes: &[
-                VertexAttribute { offset: 0, shader_location: 0, format: VertexFormat::Float32x2 },
+                VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: VertexFormat::Float32x2,
+                },
                 VertexAttribute {
                     offset: std::mem::size_of::<[f32; 2]>() as BufferAddress,
                     shader_location: 1,
@@ -42,7 +46,11 @@ impl TextVertex {
             array_stride: std::mem::size_of::<TextVertex>() as BufferAddress,
             step_mode: VertexStepMode::Vertex,
             attributes: &[
-                VertexAttribute { offset: 0, shader_location: 0, format: VertexFormat::Float32x2 },
+                VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: VertexFormat::Float32x2,
+                },
                 VertexAttribute {
                     offset: std::mem::size_of::<[f32; 2]>() as BufferAddress,
                     shader_location: 1,
@@ -79,7 +87,12 @@ struct AtlasPacker {
 }
 impl AtlasPacker {
     fn new(size: u32) -> Self {
-        Self { x: 0, y: 0, row_h: 0, size }
+        Self {
+            x: 0,
+            y: 0,
+            row_h: 0,
+            size,
+        }
     }
     fn alloc(&mut self, w: u32, h: u32, pad: u32) -> Option<(u32, u32)> {
         let w = w + pad * 2;
@@ -230,7 +243,11 @@ impl<'a> GPU<'a> {
         let atlas_size = 1024u32;
         let atlas_tex = device.create_texture(&TextureDescriptor {
             label: Some("glyph atlas"),
-            size: Extent3d { width: atlas_size, height: atlas_size, depth_or_array_layers: 1 },
+            size: Extent3d {
+                width: atlas_size,
+                height: atlas_size,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: TextureDimension::D2,
@@ -272,8 +289,14 @@ impl<'a> GPU<'a> {
             label: Some("atlas bind group"),
             layout: &atlas_bgl,
             entries: &[
-                BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&atlas_view) },
-                BindGroupEntry { binding: 1, resource: BindingResource::Sampler(&atlas_sampler) },
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&atlas_view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&atlas_sampler),
+                },
             ],
         });
 
@@ -356,7 +379,7 @@ impl<'a> GPU<'a> {
         }
     }
 
-    pub fn render_items(&mut self, items: &[DisplayItem]) {
+    pub fn render_items(&mut self, items: &[DisplayItem], scroll_y: f32) {
         // 分解
         let mut rects: Vec<DrawRect> = Vec::new();
         let mut texts: Vec<DrawText> = Vec::new();
@@ -368,18 +391,21 @@ impl<'a> GPU<'a> {
             }
         }
 
-        let rect_verts = self.rect_vertices(&rects);
-        let text_verts = self.text_vertices(&texts);
+        // ★ scroll_y を渡す
+        let rect_verts = self.rect_vertices(&rects, scroll_y);
+        let text_verts = self.text_vertices(&texts, scroll_y);
 
         // vbuf拡張（雑だけど安定）
         self.ensure_rect_capacity(rect_verts.len());
         self.ensure_text_capacity(text_verts.len());
 
         if !rect_verts.is_empty() {
-            self.queue.write_buffer(&self.rect_vbuf, 0, bytemuck::cast_slice(&rect_verts));
+            self.queue
+                .write_buffer(&self.rect_vbuf, 0, bytemuck::cast_slice(&rect_verts));
         }
         if !text_verts.is_empty() {
-            self.queue.write_buffer(&self.text_vbuf, 0, bytemuck::cast_slice(&text_verts));
+            self.queue
+                .write_buffer(&self.text_vbuf, 0, bytemuck::cast_slice(&text_verts));
         }
 
         let output = match self.surface.get_current_texture() {
@@ -390,10 +416,14 @@ impl<'a> GPU<'a> {
             }
         };
 
-        let view = output.texture.create_view(&TextureViewDescriptor::default());
-        let mut encoder = self.device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("encoder"),
-        });
+        let view = output
+            .texture
+            .create_view(&TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("encoder"),
+            });
 
         {
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
@@ -402,7 +432,12 @@ impl<'a> GPU<'a> {
                     view: &view,
                     resolve_target: None,
                     ops: Operations {
-                        load: LoadOp::Clear(Color { r: 0.97, g: 0.97, b: 0.98, a: 1.0 }),
+                        load: LoadOp::Clear(Color {
+                            r: 0.97,
+                            g: 0.97,
+                            b: 0.98,
+                            a: 1.0,
+                        }),
                         store: StoreOp::Store,
                     },
                 })],
@@ -457,36 +492,57 @@ impl<'a> GPU<'a> {
         }
     }
 
-    fn rect_vertices(&self, rects: &[DrawRect]) -> Vec<RectVertex> {
+    fn rect_vertices(&self, rects: &[DrawRect], scroll_y: f32) -> Vec<RectVertex> {
         let mut out = Vec::with_capacity(rects.len() * 6);
 
         let w = self.config.width as f32;
         let h = self.config.height as f32;
 
         for r in rects {
-            if r.w <= 0.0 || r.h <= 0.0 { continue; }
+            let ry = r.y - scroll_y;
+            if r.w <= 0.0 || r.h <= 0.0 {
+                continue;
+            }
 
             // pixel -> NDC
             let x1 = (r.x / w) * 2.0 - 1.0;
-            let y1 = 1.0 - (r.y / h) * 2.0;
+            let y1 = 1.0 - (ry / h) * 2.0;
             let x2 = ((r.x + r.w) / w) * 2.0 - 1.0;
-            let y2 = 1.0 - ((r.y + r.h) / h) * 2.0;
+            let y2 = 1.0 - ((ry + r.h) / h) * 2.0;
 
             let c = r.color;
 
-            out.push(RectVertex { pos: [x1, y1], color: c });
-            out.push(RectVertex { pos: [x2, y1], color: c });
-            out.push(RectVertex { pos: [x2, y2], color: c });
+            out.push(RectVertex {
+                pos: [x1, y1],
+                color: c,
+            });
+            out.push(RectVertex {
+                pos: [x2, y1],
+                color: c,
+            });
+            out.push(RectVertex {
+                pos: [x2, y2],
+                color: c,
+            });
 
-            out.push(RectVertex { pos: [x1, y1], color: c });
-            out.push(RectVertex { pos: [x2, y2], color: c });
-            out.push(RectVertex { pos: [x1, y2], color: c });
+            out.push(RectVertex {
+                pos: [x1, y1],
+                color: c,
+            });
+            out.push(RectVertex {
+                pos: [x2, y2],
+                color: c,
+            });
+            out.push(RectVertex {
+                pos: [x1, y2],
+                color: c,
+            });
         }
 
         out
     }
 
-    fn text_vertices(&mut self, texts: &[DrawText]) -> Vec<TextVertex> {
+    fn text_vertices(&mut self, texts: &[DrawText], scroll_y: f32) -> Vec<TextVertex> {
         // ざっくり：1文字 = quad(6頂点)
         let mut out = Vec::new();
 
@@ -498,12 +554,19 @@ impl<'a> GPU<'a> {
             let key_size = size_px.round() as u32;
 
             let mut pen_x = t.x;
-            let baseline_y = t.y;
+
+            // ★doc座標 → 画面座標
+            let baseline_y = t.y - scroll_y;
+
+            // ★行が完全に画面外ならスキップ（軽量化）
+            let top = t.hit.y - scroll_y;
+            let bottom = top + t.hit.height;
+            if bottom < 0.0 || top > h {
+                continue;
+            }
 
             for ch in t.text.chars() {
-                // 空白はadvanceだけ
                 if ch == '\n' {
-                    // 改行（簡易）
                     pen_x = t.x;
                     continue;
                 }
@@ -514,22 +577,55 @@ impl<'a> GPU<'a> {
                 let gx = pen_x + ge.xmin as f32;
                 let gy = baseline_y - (ge.h as f32) - ge.ymin as f32;
 
+                // ★画面外なら頂点を作らず advance だけ進める
+                if gy > h || (gy + ge.h as f32) < 0.0 || gx > w || (gx + ge.w as f32) < 0.0 {
+                    pen_x += ge.advance;
+                    continue;
+                }
+
                 let x1 = (gx / w) * 2.0 - 1.0;
                 let y1 = 1.0 - (gy / h) * 2.0;
                 let x2 = ((gx + ge.w as f32) / w) * 2.0 - 1.0;
                 let y2 = 1.0 - ((gy + ge.h as f32) / h) * 2.0;
 
-                let u0 = ge.u0; let v0 = ge.v0; let u1 = ge.u1; let v1 = ge.v1;
+                let u0 = ge.u0;
+                let v0 = ge.v0;
+                let u1 = ge.u1;
+                let v1 = ge.v1;
                 let c = t.color;
 
                 // quad (2 triangles)
-                out.push(TextVertex { pos: [x1, y1], uv: [u0, v0], color: c });
-                out.push(TextVertex { pos: [x2, y1], uv: [u1, v0], color: c });
-                out.push(TextVertex { pos: [x2, y2], uv: [u1, v1], color: c });
+                out.push(TextVertex {
+                    pos: [x1, y1],
+                    uv: [u0, v0],
+                    color: c,
+                });
+                out.push(TextVertex {
+                    pos: [x2, y1],
+                    uv: [u1, v0],
+                    color: c,
+                });
+                out.push(TextVertex {
+                    pos: [x2, y2],
+                    uv: [u1, v1],
+                    color: c,
+                });
 
-                out.push(TextVertex { pos: [x1, y1], uv: [u0, v0], color: c });
-                out.push(TextVertex { pos: [x2, y2], uv: [u1, v1], color: c });
-                out.push(TextVertex { pos: [x1, y2], uv: [u0, v1], color: c });
+                out.push(TextVertex {
+                    pos: [x1, y1],
+                    uv: [u0, v0],
+                    color: c,
+                });
+                out.push(TextVertex {
+                    pos: [x2, y2],
+                    uv: [u1, v1],
+                    color: c,
+                });
+                out.push(TextVertex {
+                    pos: [x1, y2],
+                    uv: [u0, v1],
+                    color: c,
+                });
 
                 pen_x += ge.advance;
             }
@@ -550,8 +646,12 @@ impl<'a> GPU<'a> {
         // bitmapが空の時（スペース等）
         if gw == 0 || gh == 0 {
             let e = GlyphEntry {
-                u0: 0.0, v0: 0.0, u1: 0.0, v1: 0.0,
-                w: 0, h: 0,
+                u0: 0.0,
+                v0: 0.0,
+                u1: 0.0,
+                v1: 0.0,
+                w: 0,
+                h: 0,
                 xmin: metrics.xmin,
                 ymin: metrics.ymin,
                 advance: metrics.advance_width,
@@ -561,7 +661,10 @@ impl<'a> GPU<'a> {
         }
 
         // atlasに配置
-        let (ax, ay) = self.packer.alloc(gw, gh, 1).expect("atlas full (increase atlas size)");
+        let (ax, ay) = self
+            .packer
+            .alloc(gw, gh, 1)
+            .expect("atlas full (increase atlas size)");
 
         // R8 に書き込み
         self.queue.write_texture(
@@ -577,7 +680,11 @@ impl<'a> GPU<'a> {
                 bytes_per_row: Some(gw),
                 rows_per_image: Some(gh),
             },
-            Extent3d { width: gw, height: gh, depth_or_array_layers: 1 },
+            Extent3d {
+                width: gw,
+                height: gh,
+                depth_or_array_layers: 1,
+            },
         );
 
         let u0 = ax as f32 / self.atlas_size as f32;
@@ -586,8 +693,12 @@ impl<'a> GPU<'a> {
         let v1 = (ay + gh) as f32 / self.atlas_size as f32;
 
         let e = GlyphEntry {
-            u0, v0, u1, v1,
-            w: gw, h: gh,
+            u0,
+            v0,
+            u1,
+            v1,
+            w: gw,
+            h: gh,
             xmin: metrics.xmin,
             ymin: metrics.ymin,
             advance: metrics.advance_width,

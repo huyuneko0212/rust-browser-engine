@@ -215,18 +215,37 @@ fn expand_css_imports(
 // -------------------------
 // リンクの当たり判定
 // -------------------------
-fn hit_test_link(display_list: &[DisplayItem], x: f32, y: f32) -> Option<String> {
+fn hit_test_link(display_list: &[DisplayItem], x: f32, y: f32, scroll_y: f32) -> Option<String> {
+    let doc_y = y + scroll_y;
+
     for item in display_list.iter().rev() {
         if let DisplayItem::Text(t) = item {
             if let Some(href) = &t.href {
                 let r = &t.hit;
-                if x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height {
+                if x >= r.x && x <= r.x + r.width && doc_y >= r.y && doc_y <= r.y + r.height {
                     return Some(href.clone());
                 }
             }
         }
     }
     None
+}
+
+//display_list から “ページの高さ” を推定してスクロール上限を作る
+fn estimate_doc_height(display_list: &[DisplayItem]) -> f32 {
+    let mut max_y = 0.0f32;
+
+    for it in display_list {
+        match it {
+            DisplayItem::Rect(r) => {
+                max_y = max_y.max(r.y + r.h);
+            }
+            DisplayItem::Text(t) => {
+                max_y = max_y.max(t.hit.y + t.hit.height);
+            }
+        }
+    }
+    max_y
 }
 
 fn apply_hover(display_list: &mut [DisplayItem], hovered: Option<&str>) {
@@ -361,14 +380,17 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
 struct BrowserState {
     url: url::URL,
     display_list: Vec<DisplayItem>,
+    doc_height: f32,
 }
 
 impl BrowserState {
     fn new(initial: url::URL) -> Self {
         let display_list = build_page(&initial);
+        let doc_height = estimate_doc_height(&display_list);
         Self {
             url: initial,
             display_list,
+            doc_height,
         }
     }
 
@@ -407,28 +429,43 @@ fn main() {
     // hoverしてるhref（変化検出用）
     let mut hovered_href: Option<String> = None;
 
+    let mut scroll_y = 0.0f32;
+
     event_loop
         .run(move |event, elwt| {
             elwt.set_control_flow(ControlFlow::Poll);
 
             match event {
                 Event::WindowEvent { event, .. } => match event {
-                    WindowEvent::CloseRequested => elwt.exit(),
-                    WindowEvent::Resized(size) => gpu.resize(size),
+                    WindowEvent::Resized(size) => {
+                        gpu.resize(size);
+                    }
+
+                    WindowEvent::MouseWheel { delta, .. } => {
+                        // wheel delta は環境で単位が違うので雑に吸収
+                        let dy = match delta {
+                            winit::event::MouseScrollDelta::LineDelta(_, y) => -y * 40.0,
+                            winit::event::MouseScrollDelta::PixelDelta(p) => -(p.y as f32),
+                        };
+
+                        let viewport_h = gpu.config.height as f32; // GPUのconfig使えるならこれが確実
+                        let max_scroll = (state.doc_height - viewport_h).max(0.0);
+
+                        scroll_y = (scroll_y + dy).clamp(0.0, max_scroll);
+                    }
 
                     WindowEvent::CursorMoved { position, .. } => {
                         mouse_x = position.x as f32;
                         mouse_y = position.y as f32;
-                        let now = hit_test_link(&state.display_list, mouse_x, mouse_y);
 
-                        // カーソル変更
+                        let now = hit_test_link(&state.display_list, mouse_x, mouse_y, scroll_y);
+
                         window.set_cursor_icon(if now.is_some() {
                             CursorIcon::Pointer
                         } else {
                             CursorIcon::Default
                         });
 
-                        // hover対象が変わったら色を更新
                         if now != hovered_href {
                             hovered_href = now;
                             apply_hover(&mut state.display_list, hovered_href.as_deref());
@@ -439,26 +476,24 @@ fn main() {
                         state: st, button, ..
                     } => {
                         if button == MouseButton::Left && st == ElementState::Pressed {
-                            if let Some(href) = hit_test_link(&state.display_list, mouse_x, mouse_y)
+                            if let Some(href) =
+                                hit_test_link(&state.display_list, mouse_x, mouse_y, scroll_y)
                             {
-                                // ★遷移前にhoverをリセット（色残り防止）
-                                hovered_href = None;
-                                apply_hover(&mut state.display_list, None);
-                                window.set_cursor_icon(CursorIcon::Default);
-
                                 let next = state.url.resolve_location(&href);
                                 state.navigate(next);
+                                scroll_y = 0.0; // ページ遷移で先頭へ
+                                hovered_href = None;
                             }
                         }
                     }
 
                     WindowEvent::RedrawRequested => {
-                        render::render(&mut gpu, &state.display_list);
+                        // ★描画時に scroll_y をGPUへ渡す（次でGPU修正）
+                        render::render(&mut gpu, &state.display_list, scroll_y);
                     }
 
                     _ => {}
                 },
-
                 Event::AboutToWait => window.request_redraw(),
                 _ => {}
             }
