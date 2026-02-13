@@ -24,13 +24,14 @@ impl StyledNode {
         self.specified_values.get(name)
     }
 
-    /// display の最小実装（重要：TextはInline）
-    /// - CSSで display が指定されていればそれを優先
-    /// - Textノードは必ず Inline（これをやらないと display_list で拾えなくなり “真っ白” になりがち）
-    /// - HTMLのデフォルト表示に寄せて、よくあるインライン要素は Inline
-    /// - それ以外は Block（最小実装）
+    /// display の最小実装（IFC向け）
+    /// - Textノードは必ず Inline
+    /// - CSS display 指定があれば最優先
+    /// - head/title/meta/script/style/link は None
+    /// - よくある block 要素は Block
+    /// - それ以外は Inline（迷ったら inline のほうが IFC が動きやすい）
     pub fn display(&self) -> Display {
-        // ★Textノードは必ず inline
+        // Textノードは必ず inline
         if matches!(self.node.node_type, NodeType::Text(_)) {
             return Display::Inline;
         }
@@ -41,23 +42,25 @@ impl StyledNode {
                 "block" => Display::Block,
                 "inline" => Display::Inline,
                 "none" => Display::None,
-                _ => Display::Block,
+                _ => Display::Inline,
             };
         }
 
-        // Elementのデフォルト（超最小）
-        // ここを入れると a/span が inline になって自然になる
+        // Element のデフォルト表示（超最小）
         if let NodeType::Element(ref e) = self.node.node_type {
-            if is_inline_element(&e.tag_name) {
-                return Display::Inline;
-            }
-            if is_hidden_element(&e.tag_name) {
+            let tag = e.tag_name.as_str();
+
+            if is_hidden_element(tag) {
                 return Display::None;
             }
+            if is_block_element(tag) {
+                return Display::Block;
+            }
+            // それ以外は inline 扱い
+            return Display::Inline;
         }
 
-        // 最小実装：基本は block
-        Display::Block
+        Display::Inline
     }
 
     pub fn color(&self) -> Option<[f32; 4]> {
@@ -70,8 +73,8 @@ impl StyledNode {
             return parse_color(v);
         }
         if let Some(v) = self.value("background") {
-            // "none" や "transparent" を弾く
-            if v.trim() == "none" || v.trim() == "transparent" {
+            let t = v.trim().to_lowercase();
+            if t == "none" || t == "transparent" {
                 return None;
             }
             return parse_color(v);
@@ -80,17 +83,37 @@ impl StyledNode {
     }
 }
 
-/// HTMLのデフォルト表示に寄せた “最小” inline判定
-fn is_inline_element(tag: &str) -> bool {
-    matches!(
-        tag,
-        "a" | "span" | "strong" | "em" | "b" | "i" | "u" | "small" | "code" | "br" | "img"
-    )
-}
-
 /// そもそも表示しない（display:none相当）
 fn is_hidden_element(tag: &str) -> bool {
     matches!(tag, "head" | "meta" | "title" | "script" | "style" | "link")
+}
+
+/// HTMLのデフォルト表示に寄せた “最小” block 判定
+fn is_block_element(tag: &str) -> bool {
+    matches!(
+        tag,
+        "html"
+            | "body"
+            | "div"
+            | "p"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "ul"
+            | "ol"
+            | "li"
+            | "section"
+            | "article"
+            | "header"
+            | "footer"
+            | "nav"
+            | "main"
+            | "pre"
+            | "blockquote"
+    )
 }
 
 pub fn style_tree(root: Node, stylesheet: &Stylesheet) -> StyledNode {
@@ -119,7 +142,7 @@ pub fn style_tree(root: Node, stylesheet: &Stylesheet) -> StyledNode {
 struct Specificity(u32, u32, u32); // (id, class, tag)
 
 fn specified_values_for(elem: &ElementData, stylesheet: &Stylesheet) -> HashMap<String, String> {
-    // いちばん強い宣言が最後に勝つように、(specificity, order) で適用する
+    // いちばん強い宣言が最後に勝つように、(specificity, order) で適用
     let mut matched: Vec<(Specificity, usize, &Rule)> = vec![];
 
     for (i, rule) in stylesheet.rules.iter().enumerate() {
@@ -143,11 +166,13 @@ fn specified_values_for(elem: &ElementData, stylesheet: &Stylesheet) -> HashMap<
 
 fn rule_matches(elem: &ElementData, rule: &Rule) -> bool {
     // 複数セレクタ: どれか当たればOK
-    rule.selectors.iter().any(|sel| selector_matches(elem, &sel.simple))
+    rule.selectors
+        .iter()
+        .any(|sel| selector_matches(elem, &sel.simple))
 }
 
 fn rule_specificity(elem: &ElementData, rule: &Rule) -> Specificity {
-    // 当たったセレクタの最大specificityを採用
+    // 当たったセレクタの最大specificity
     rule.selectors
         .iter()
         .filter_map(|sel| selector_specificity_if_matches(elem, &sel.simple))
@@ -160,7 +185,7 @@ fn rule_specificity(elem: &ElementData, rule: &Rule) -> Specificity {
 /// - ".class"
 /// - "tag"
 /// - "tag.class"（簡易）
-/// それ以外は false（必要になったら拡張）
+/// それ以外は false
 fn selector_matches(elem: &ElementData, selector: &str) -> bool {
     let s = selector.trim();
     if s.is_empty() {
@@ -168,7 +193,12 @@ fn selector_matches(elem: &ElementData, selector: &str) -> bool {
     }
 
     // 複雑なセレクタ（空白、>、+、[attr]、:pseudo 等）は今は捨てる
-    if s.contains(' ') || s.contains('>') || s.contains('+') || s.contains('[') || s.contains(':') {
+    if s.contains(' ')
+        || s.contains('>')
+        || s.contains('+')
+        || s.contains('[')
+        || s.contains(':')
+    {
         return false;
     }
 
