@@ -26,6 +26,16 @@ fn request_inner(url: &URL, depth: usize) -> Response {
         panic!("Too many redirects");
     }
 
+    // -------------------------
+    // file:// 対応（ローカルから読む）
+    // -------------------------
+    if url.scheme == "file" {
+        return request_file(url);
+    }
+
+    // -------------------------
+    // http(s)://
+    // -------------------------
     let addr = format!("{}:{}", url.host, url.port);
     let stream = TcpStream::connect(addr).unwrap();
 
@@ -60,6 +70,57 @@ Connection: close\r\n\
     };
 
     parse_response(url, raw_bytes, depth)
+}
+
+fn request_file(url: &URL) -> Response {
+    // url.path は "D:/.../a.html" or "/home/.../a.html" 想定
+    let mut fs_path = url.path.clone();
+
+    // 念のためバックスラッシュ許容
+    fs_path = fs_path.replace('\\', "/");
+
+    // Windows: "D:/..." を std::fs が読める形に
+    // （このままでも読めることが多いが、\ に寄せてもOK）
+    let fs_path_os = fs_path.replace('/', "\\");
+
+    let bytes = match std::fs::read(&fs_path_os) {
+        Ok(b) => b,
+        Err(e) => {
+            return Response {
+                status_code: 404,
+                headers: HashMap::new(),
+                body: format!(
+                    "<html><body><h1>File not found</h1><p>{}</p><p>{}</p></body></html>",
+                    fs_path_os, e
+                ),
+                content_type: Some("text/html; charset=utf-8".to_string()),
+            };
+        }
+    };
+
+    // 拡張子から content-type 推定（最小）
+    let content_type = guess_content_type_from_path(&fs_path);
+
+    Response {
+        status_code: 200,
+        headers: HashMap::new(),
+        body: String::from_utf8_lossy(&bytes).to_string(),
+        content_type,
+    }
+}
+
+fn guess_content_type_from_path(path: &str) -> Option<String> {
+    let p = path.to_lowercase();
+    if p.ends_with(".html") || p.ends_with(".htm") {
+        Some("text/html; charset=utf-8".to_string())
+    } else if p.ends_with(".css") {
+        Some("text/css; charset=utf-8".to_string())
+    } else if p.ends_with(".txt") {
+        Some("text/plain; charset=utf-8".to_string())
+    } else {
+        // 画像はまだ実装しないので application/octet-stream 扱いにしてもOK
+        Some("application/octet-stream".to_string())
+    }
 }
 
 fn parse_response(url: &URL, resp: Vec<u8>, depth: usize) -> Response {
@@ -101,7 +162,6 @@ fn parse_response(url: &URL, resp: Vec<u8>, depth: usize) -> Response {
     // redirect（★相対解決）
     if matches!(status_code, 301 | 302 | 303 | 307 | 308) {
         if let Some(loc) = headers.get("location").cloned() {
-            // resolve_location が &str を取る想定ならこれが安全
             let new_url = url.resolve_location(&loc);
             return request_inner(&new_url, depth + 1);
         }
@@ -144,7 +204,8 @@ fn parse_response(url: &URL, resp: Vec<u8>, depth: usize) -> Response {
                         return Response {
                             status_code,
                             headers,
-                            body: "<html><body><p>gzip decode failed</p></body></html>".to_string(),
+                            body: "<html><body><p>gzip decode failed</p></body></html>"
+                                .to_string(),
                             content_type,
                         };
                     }
