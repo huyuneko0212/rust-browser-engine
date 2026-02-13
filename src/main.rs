@@ -16,7 +16,7 @@ use std::env;
 use winit::{
     event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
-    window::WindowBuilder,
+    window::{CursorIcon, WindowBuilder},
 };
 
 use crate::{display::DisplayItem, gpu::GPU};
@@ -118,11 +118,7 @@ fn extract_import_url(line: &str) -> Option<String> {
             return None;
         }
 
-        let inner = inner
-            .trim()
-            .trim_matches('"')
-            .trim_matches('\'')
-            .trim();
+        let inner = inner.trim().trim_matches('"').trim_matches('\'').trim();
         if inner.is_empty() {
             None
         } else {
@@ -212,6 +208,40 @@ fn hit_test_link(display_list: &[DisplayItem], x: f32, y: f32) -> Option<String>
     None
 }
 
+fn apply_hover(display_list: &mut [DisplayItem], hovered: Option<&str>) {
+    for it in display_list.iter_mut() {
+        match it {
+            DisplayItem::Text(t) => {
+                // まず元の色へ戻す
+                t.color = t.base_color;
+
+                // hover中ならリンクだけ濃くする
+                if let (Some(h), Some(my)) = (hovered, t.href.as_deref()) {
+                    if my == h {
+                        t.color = darker(t.base_color, 0.75); // 0.75 = 濃く
+                    }
+                }
+            }
+            DisplayItem::Rect(r) => {
+                // まず元の色へ戻す（背景も含む）
+                r.color = r.base_color;
+
+                // 下線だけ（href付き）hoverで濃く
+                if let (Some(h), Some(my)) = (hovered, r.href.as_deref()) {
+                    if my == h {
+                        r.color = darker(r.base_color, 0.75);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn darker(c: [f32; 4], factor: f32) -> [f32; 4] {
+    // RGBだけ暗く、alphaは維持
+    [c[0] * factor, c[1] * factor, c[2] * factor, c[3]]
+}
+
 // -------------------------
 // 「ページを作る」処理を関数化
 // -------------------------
@@ -249,7 +279,10 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
         }
 
         if !is_css_content_type(&resp.content_type) {
-            println!("skip non-css content-type: {:?} ({})", resp.content_type, href);
+            println!(
+                "skip non-css content-type: {:?} ({})",
+                resp.content_type, href
+            );
             continue;
         }
 
@@ -311,7 +344,10 @@ struct BrowserState {
 impl BrowserState {
     fn new(initial: url::URL) -> Self {
         let display_list = build_page(&initial);
-        Self { url: initial, display_list }
+        Self {
+            url: initial,
+            display_list,
+        }
     }
 
     fn navigate(&mut self, next: url::URL) {
@@ -346,6 +382,8 @@ fn main() {
     // マウス座標
     let mut mouse_x = 0.0f32;
     let mut mouse_y = 0.0f32;
+    // hoverしてるhref（変化検出用）
+    let mut hovered_href: Option<String> = None;
 
     event_loop
         .run(move |event, elwt| {
@@ -359,11 +397,28 @@ fn main() {
                     WindowEvent::CursorMoved { position, .. } => {
                         mouse_x = position.x as f32;
                         mouse_y = position.y as f32;
+                        let now = hit_test_link(&state.display_list, mouse_x, mouse_y);
+
+                        // カーソル変更
+                        window.set_cursor_icon(if now.is_some() {
+                            CursorIcon::Pointer
+                        } else {
+                            CursorIcon::Default
+                        });
+
+                        // hover対象が変わったら色を更新
+                        if now != hovered_href {
+                            hovered_href = now;
+                            apply_hover(&mut state.display_list, hovered_href.as_deref());
+                        }
                     }
 
-                    WindowEvent::MouseInput { state: st, button, .. } => {
+                    WindowEvent::MouseInput {
+                        state: st, button, ..
+                    } => {
                         if button == MouseButton::Left && st == ElementState::Pressed {
-                            if let Some(href) = hit_test_link(&state.display_list, mouse_x, mouse_y) {
+                            if let Some(href) = hit_test_link(&state.display_list, mouse_x, mouse_y)
+                            {
                                 let next = state.url.resolve_location(&href);
                                 state.navigate(next);
                             }
