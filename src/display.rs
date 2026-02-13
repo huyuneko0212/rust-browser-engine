@@ -23,7 +23,12 @@ pub struct DrawText {
     pub text: String,
     pub size_px: f32,
     pub color: [f32; 4],
+    pub href: Option<String>,
+    pub hit: crate::layout::Rect,
 }
+
+const UNDERLINE_THICKNESS: f32 = 1.5;
+const UNDERLINE_GAP: f32 = 2.0;
 
 /// IFC前提：
 /// - layout.rs が InlineNode(Text) の x/y/width/height を決める
@@ -50,7 +55,7 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>) {
         }
     }
 
-    // 背景：BlockNode だけ（Anonymous/Inlineは基本描かない）
+    // 背景：BlockNode だけ
     if matches!(node.box_type, BoxType::BlockNode(_)) {
         let c = &node.dimensions.content;
         if c.width > 0.0 && c.height > 0.0 {
@@ -76,18 +81,42 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>) {
                 if !txt.is_empty() {
                     let c = &node.dimensions.content;
                     if c.width > 0.0 && c.height > 0.0 {
-                        let color = sn.color().unwrap_or([0.1, 0.1, 0.12, 1.0]);
+
+                        let is_link = sn.link_href.is_some();
+
+                        // デフォルト色
+                        let mut color = sn.color().unwrap_or([0.1, 0.1, 0.12, 1.0]);
+
+                        // CSSでcolor未指定ならリンクは青に
+                        if is_link && sn.value("color").is_none() {
+                            color = [0.0, 0.35, 0.95, 1.0];
+                        }
+
                         let font_size = font_size_px(sn).unwrap_or(16.0);
 
-                        // y は layout.rs の IFC が “行の上端” 基準で入れてる想定
-                        // あなたの描画側が baseline 前提なら +font_size する等で調整
+                        // テキスト描画
                         out.push(DisplayItem::Text(DrawText {
                             x: c.x,
-                            y: c.y + font_size, // baselineっぽく寄せる（暫定）
+                            y: c.y + font_size, // baseline寄せ
                             text: txt.to_string(),
                             size_px: font_size,
                             color,
+                            href: sn.link_href.clone(),
+                            hit: c.clone(),
                         }));
+
+                        // ★リンクなら下線を引く
+                        if is_link {
+                            let underline_y = c.y + font_size + UNDERLINE_GAP;
+
+                            out.push(DisplayItem::Rect(DrawRect {
+                                x: c.x,
+                                y: underline_y,
+                                w: c.width.max(0.0),
+                                h: UNDERLINE_THICKNESS,
+                                color,
+                            }));
+                        }
                     }
                 }
             }
@@ -102,6 +131,7 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>) {
 // ---------------------------
 // CSS helpers（最低限）
 // ---------------------------
+
 fn font_size_px(sn: &crate::style::StyledNode) -> Option<f32> {
     sn.value("font-size").and_then(|v| parse_px(v))
 }

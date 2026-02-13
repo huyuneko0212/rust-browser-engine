@@ -14,12 +14,12 @@ use std::collections::HashSet;
 use std::env;
 
 use winit::{
-    event::{Event, WindowEvent},
+    event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::WindowBuilder,
 };
 
-use crate::gpu::GPU;
+use crate::{display::DisplayItem, gpu::GPU};
 
 // -------------------------
 // <style> 抽出
@@ -118,7 +118,11 @@ fn extract_import_url(line: &str) -> Option<String> {
             return None;
         }
 
-        let inner = inner.trim().trim_matches('"').trim_matches('\'').trim();
+        let inner = inner
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim();
         if inner.is_empty() {
             None
         } else {
@@ -178,8 +182,6 @@ fn expand_css_imports(
                 let expanded = expand_css_imports(&import_url, &resp.body, visited, depth + 1);
                 out.push_str(&expanded);
                 out.push('\n');
-            } else {
-                // 取れない/非CSSは無視
             }
 
             // 元の @import 行は消す
@@ -193,38 +195,44 @@ fn expand_css_imports(
     out
 }
 
-fn main() {
-    let url_str = env::args().nth(1).expect("url required");
+// -------------------------
+// リンクの当たり判定
+// -------------------------
+fn hit_test_link(display_list: &[DisplayItem], x: f32, y: f32) -> Option<String> {
+    for item in display_list.iter().rev() {
+        if let DisplayItem::Text(t) = item {
+            if let Some(href) = &t.href {
+                let r = &t.hit;
+                if x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height {
+                    return Some(href.clone());
+                }
+            }
+        }
+    }
+    None
+}
 
-    // -------------------------
-    // ネットワーク → DOM
-    // -------------------------
-    let url = url::URL::new(&url_str);
-    let response = http::request(&url);
-
+// -------------------------
+// 「ページを作る」処理を関数化
+// -------------------------
+fn build_page(url: &url::URL) -> Vec<DisplayItem> {
+    // 1) HTML取得 → DOM
+    let response = http::request(url);
     println!("HTML status: {}", response.status_code);
-    let body = response.body;
 
-    println!("HTML取得完了");
-    let dom_root = html::parse(body);
+    let dom_root = html::parse(response.body);
     println!("DOM生成完了");
 
-    // -------------------------
-    // CSS抽出（<style> + <link rel=stylesheet> + @import展開）
-    // -------------------------
+    // 2) CSS抽出（<style> + <link rel=stylesheet> + @import展開）
     let mut css_text = String::new();
-
-    // 1) <style>
     extract_style_text(&dom_root, &mut css_text);
 
-    // 2) <link rel=stylesheet href=...>
     let mut css_links: Vec<String> = Vec::new();
     extract_link_stylesheets(&dom_root, &mut css_links);
 
     println!("inline <style>: {} bytes", css_text.len());
     println!("link stylesheets: {}", css_links.len());
 
-    // 3) 外部CSS取得 + @import 展開
     for href in css_links {
         let css_url = url.resolve_location(&href);
 
@@ -259,47 +267,68 @@ fn main() {
         css_text.push('\n');
     }
 
-    // ★ <style> 内にも @import が居る可能性があるので、最後に全体も展開しとく（安全）
+    // <style> 内にも @import が居る可能性があるので、最後に全体も展開
     {
         let mut visited = HashSet::new();
         let base_key = format!("{}://{}:{}{}", url.scheme, url.host, url.port, url.path);
         visited.insert(base_key);
-        css_text = expand_css_imports(&url, &css_text, &mut visited, 0);
+        css_text = expand_css_imports(url, &css_text, &mut visited, 0);
     }
 
     println!("CSS total: {} bytes", css_text.len());
 
-    // -------------------------
-    // CSS parse → style tree
-    // -------------------------
+    // 3) CSS parse → style tree
     let stylesheet = css::Parser::new(css_text).parse_stylesheet();
     let styled_root = style::style_tree(dom_root, &stylesheet);
 
-    // -------------------------
-    // layout tree
-    // -------------------------
+    // 4) layout tree
     let mut layout_root = layout::build_layout_tree(styled_root);
 
     let mut viewport = layout::Dimensions::default();
     viewport.content.width = 800.0;
     viewport.content.height = 600.0;
 
+    // ここは既存のまま（本当はGPUが持ってるfontを使うのが理想だが、最小差分優先）
     let font_bytes = std::fs::read("C:\\Windows\\Fonts\\meiryo.ttc").unwrap();
     let font = fontdue::Font::from_bytes(font_bytes, fontdue::FontSettings::default()).unwrap();
 
     layout_root.layout_with_font(viewport, &font);
     println!("layout完了");
 
-    // -------------------------
-    // display list
-    // -------------------------
+    // 5) display list
     let mut display_list = vec![];
     display::build_display_list(&layout_root, &mut display_list, &font);
     println!("display items: {}", display_list.len());
 
-    // -------------------------
+    display_list
+}
+
+struct BrowserState {
+    url: url::URL,
+    display_list: Vec<DisplayItem>,
+}
+
+impl BrowserState {
+    fn new(initial: url::URL) -> Self {
+        let display_list = build_page(&initial);
+        Self { url: initial, display_list }
+    }
+
+    fn navigate(&mut self, next: url::URL) {
+        println!(
+            "\n=== navigate -> {}://{}:{}{} ===",
+            next.scheme, next.host, next.port, next.path
+        );
+        self.display_list = build_page(&next);
+        self.url = next;
+    }
+}
+
+fn main() {
+    let url_str = env::args().nth(1).expect("url required");
+    let initial_url = url::URL::new(&url_str);
+
     // window + gpu
-    // -------------------------
     let event_loop = EventLoop::new().unwrap();
 
     let window: &'static winit::window::Window = Box::leak(Box::new(
@@ -311,6 +340,13 @@ fn main() {
 
     let mut gpu = pollster::block_on(GPU::new(window));
 
+    // ブラウザ状態
+    let mut state = BrowserState::new(initial_url);
+
+    // マウス座標
+    let mut mouse_x = 0.0f32;
+    let mut mouse_y = 0.0f32;
+
     event_loop
         .run(move |event, elwt| {
             elwt.set_control_flow(ControlFlow::Poll);
@@ -319,11 +355,28 @@ fn main() {
                 Event::WindowEvent { event, .. } => match event {
                     WindowEvent::CloseRequested => elwt.exit(),
                     WindowEvent::Resized(size) => gpu.resize(size),
-                    WindowEvent::RedrawRequested => {
-                        render::render(&mut gpu, &display_list);
+
+                    WindowEvent::CursorMoved { position, .. } => {
+                        mouse_x = position.x as f32;
+                        mouse_y = position.y as f32;
                     }
+
+                    WindowEvent::MouseInput { state: st, button, .. } => {
+                        if button == MouseButton::Left && st == ElementState::Pressed {
+                            if let Some(href) = hit_test_link(&state.display_list, mouse_x, mouse_y) {
+                                let next = state.url.resolve_location(&href);
+                                state.navigate(next);
+                            }
+                        }
+                    }
+
+                    WindowEvent::RedrawRequested => {
+                        render::render(&mut gpu, &state.display_list);
+                    }
+
                     _ => {}
                 },
+
                 Event::AboutToWait => window.request_redraw(),
                 _ => {}
             }

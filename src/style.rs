@@ -10,6 +10,7 @@ pub struct StyledNode {
     pub node: Node,
     pub specified_values: HashMap<String, String>,
     pub children: Vec<StyledNode>,
+    pub link_href: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,23 +118,42 @@ fn is_block_element(tag: &str) -> bool {
 }
 
 pub fn style_tree(root: Node, stylesheet: &Stylesheet) -> StyledNode {
+    style_tree_with_ctx(root, stylesheet, None)
+}
+
+fn style_tree_with_ctx(
+    root: Node,
+    stylesheet: &Stylesheet,
+    inherited_link: Option<String>,
+) -> StyledNode {
     let specified_values = match root.node_type {
         NodeType::Element(ref e) => specified_values_for(e, stylesheet),
         NodeType::Text(_) => HashMap::new(),
     };
 
-    let children = root
-        .children
+    let mut link_here = inherited_link.clone();
+    if let NodeType::Element(ref e) = root.node_type {
+        if e.tag_name == "a" {
+            if let Some(href) = e.attributes.get("href") {
+                let h = href.trim();
+                if !h.is_empty()
+                    && !h.starts_with('#')
+                    && !h.to_lowercase().starts_with("javascript:")
+                    && !h.to_lowercase().starts_with("data:")
+                {
+                    link_here = Some(h.to_string());
+                }
+            }
+        }
+    }
+
+    let children = root.children
         .iter()
         .cloned()
-        .map(|child| style_tree(child, stylesheet))
+        .map(|c| style_tree_with_ctx(c, stylesheet, link_here.clone()))
         .collect();
 
-    StyledNode {
-        node: root,
-        specified_values,
-        children,
-    }
+    StyledNode { node: root, specified_values, children, link_href: link_here }
 }
 
 // ---------------- selector matching ----------------
@@ -193,12 +213,7 @@ fn selector_matches(elem: &ElementData, selector: &str) -> bool {
     }
 
     // 複雑なセレクタ（空白、>、+、[attr]、:pseudo 等）は今は捨てる
-    if s.contains(' ')
-        || s.contains('>')
-        || s.contains('+')
-        || s.contains('[')
-        || s.contains(':')
-    {
+    if s.contains(' ') || s.contains('>') || s.contains('+') || s.contains('[') || s.contains(':') {
         return false;
     }
 
