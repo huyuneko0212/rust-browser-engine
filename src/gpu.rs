@@ -466,6 +466,14 @@ impl<'a> GPU<'a> {
         output.present();
     }
 
+    pub fn viewport_height(&self) -> f32 {
+        self.config.height as f32
+    }
+
+    pub fn viewport_width(&self) -> f32 {
+        self.config.width as f32
+    }
+
     fn ensure_rect_capacity(&mut self, need: usize) {
         let need = need.max(1);
         if need > self.rect_cap {
@@ -499,8 +507,20 @@ impl<'a> GPU<'a> {
         let h = self.config.height as f32;
 
         for r in rects {
-            let ry = r.y - scroll_y;
             if r.w <= 0.0 || r.h <= 0.0 {
+                continue;
+            }
+
+            // doc座標 -> 画面座標
+            let ry = r.y - scroll_y;
+
+            // 完全に画面外ならスキップ
+            // y方向
+            if ry > h || (ry + r.h) < 0.0 {
+                continue;
+            }
+            // x方向（念のため）
+            if r.x > w || (r.x + r.w) < 0.0 {
                 continue;
             }
 

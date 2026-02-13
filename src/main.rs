@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use std::env;
 
 use winit::{
-    event::{ElementState, Event, MouseButton, WindowEvent},
+    event::{ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::{CursorIcon, WindowBuilder},
 };
@@ -213,7 +213,7 @@ fn expand_css_imports(
 }
 
 // -------------------------
-// リンクの当たり判定
+// リンクの当たり判定（scroll考慮）
 // -------------------------
 fn hit_test_link(display_list: &[DisplayItem], x: f32, y: f32, scroll_y: f32) -> Option<String> {
     let doc_y = y + scroll_y;
@@ -231,21 +231,22 @@ fn hit_test_link(display_list: &[DisplayItem], x: f32, y: f32, scroll_y: f32) ->
     None
 }
 
-//display_list から “ページの高さ” を推定してスクロール上限を作る
+// display_list から “ページの高さ” を推定
 fn estimate_doc_height(display_list: &[DisplayItem]) -> f32 {
     let mut max_y = 0.0f32;
 
     for it in display_list {
         match it {
-            DisplayItem::Rect(r) => {
-                max_y = max_y.max(r.y + r.h);
-            }
-            DisplayItem::Text(t) => {
-                max_y = max_y.max(t.hit.y + t.hit.height);
-            }
+            DisplayItem::Rect(r) => max_y = max_y.max(r.y + r.h),
+            DisplayItem::Text(t) => max_y = max_y.max(t.hit.y + t.hit.height),
         }
     }
-    max_y
+    max_y.max(1.0)
+}
+
+fn clamp_scroll(scroll_y: f32, doc_h: f32, view_h: f32) -> f32 {
+    let max_scroll = (doc_h - view_h).max(0.0);
+    scroll_y.clamp(0.0, max_scroll)
 }
 
 fn apply_hover(display_list: &mut [DisplayItem], hovered: Option<&str>) {
@@ -283,7 +284,7 @@ fn darker(c: [f32; 4], factor: f32) -> [f32; 4] {
 }
 
 // -------------------------
-// 「ページを作る」処理を関数化
+// 「ページを作る」処理
 // -------------------------
 fn build_page(url: &url::URL) -> Vec<DisplayItem> {
     // 1) HTML取得 → DOM
@@ -293,7 +294,7 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
     let dom_root = html::parse(response.body);
     println!("DOM生成完了");
 
-    // 2) CSS抽出（UA CSS + <style> + <link rel=stylesheet> + @import展開）
+    // UA + <style> + <link> + @import
     let mut css_text = String::from(UA_CSS);
     css_text.push('\n');
 
@@ -342,7 +343,7 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
         css_text.push('\n');
     }
 
-    // <style> 内にも @import が居る可能性があるので、最後に全体も展開
+    // 最後に全体も @import 展開
     {
         let mut visited = HashSet::new();
         let base_key = format!("{}://{}:{}{}", url.scheme, url.host, url.port, url.path);
@@ -352,11 +353,11 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
 
     println!("CSS total: {} bytes", css_text.len());
 
-    // 3) CSS parse → style tree
+    // style tree
     let stylesheet = css::Parser::new(css_text).parse_stylesheet();
     let styled_root = style::style_tree(dom_root, &stylesheet);
 
-    // 4) layout tree
+    // layout tree
     let mut layout_root = layout::build_layout_tree(styled_root);
 
     let mut viewport = layout::Dimensions::default();
@@ -369,7 +370,7 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
     layout_root.layout_with_font(viewport, &font);
     println!("layout完了");
 
-    // 5) display list
+    // display list
     let mut display_list = vec![];
     display::build_display_list(&layout_root, &mut display_list, &font);
     println!("display items: {}", display_list.len());
@@ -400,6 +401,7 @@ impl BrowserState {
             next.scheme, next.host, next.port, next.path
         );
         self.display_list = build_page(&next);
+        self.doc_height = estimate_doc_height(&self.display_list); // ★忘れず更新
         self.url = next;
     }
 }
@@ -437,21 +439,24 @@ fn main() {
 
             match event {
                 Event::WindowEvent { event, .. } => match event {
+                    WindowEvent::CloseRequested => elwt.exit(),
+
                     WindowEvent::Resized(size) => {
                         gpu.resize(size);
+
+                        // ★Resizedでも必ずclamp（破綻防止）
+                        let view_h = gpu.viewport_height();
+                        scroll_y = clamp_scroll(scroll_y, state.doc_height, view_h);
                     }
 
                     WindowEvent::MouseWheel { delta, .. } => {
-                        // wheel delta は環境で単位が違うので雑に吸収
                         let dy = match delta {
-                            winit::event::MouseScrollDelta::LineDelta(_, y) => -y * 40.0,
-                            winit::event::MouseScrollDelta::PixelDelta(p) => -(p.y as f32),
+                            MouseScrollDelta::LineDelta(_, y) => -y * 40.0,
+                            MouseScrollDelta::PixelDelta(p) => -(p.y as f32),
                         };
 
-                        let viewport_h = gpu.config.height as f32; // GPUのconfig使えるならこれが確実
-                        let max_scroll = (state.doc_height - viewport_h).max(0.0);
-
-                        scroll_y = (scroll_y + dy).clamp(0.0, max_scroll);
+                        let view_h = gpu.viewport_height();
+                        scroll_y = clamp_scroll(scroll_y + dy, state.doc_height, view_h);
                     }
 
                     WindowEvent::CursorMoved { position, .. } => {
@@ -481,14 +486,22 @@ fn main() {
                             {
                                 let next = state.url.resolve_location(&href);
                                 state.navigate(next);
-                                scroll_y = 0.0; // ページ遷移で先頭へ
+
+                                // ページ遷移で先頭へ
+                                scroll_y = 0.0;
+
+                                // hover解除
                                 hovered_href = None;
+                                apply_hover(&mut state.display_list, None);
+
+                                // 念のためclamp（docが短いページでも破綻しない）
+                                let view_h = gpu.viewport_height();
+                                scroll_y = clamp_scroll(scroll_y, state.doc_height, view_h);
                             }
                         }
                     }
 
                     WindowEvent::RedrawRequested => {
-                        // ★描画時に scroll_y をGPUへ渡す（次でGPU修正）
                         render::render(&mut gpu, &state.display_list, scroll_y);
                     }
 
