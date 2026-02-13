@@ -239,6 +239,7 @@ fn estimate_doc_height(display_list: &[DisplayItem]) -> f32 {
         match it {
             DisplayItem::Rect(r) => max_y = max_y.max(r.y + r.h),
             DisplayItem::Text(t) => max_y = max_y.max(t.hit.y + t.hit.height),
+            DisplayItem::Image(im) => max_y = max_y.max(im.y + im.h),
         }
     }
     max_y.max(1.0)
@@ -273,6 +274,9 @@ fn apply_hover(display_list: &mut [DisplayItem], hovered: Option<&str>) {
                         r.color = darker(r.base_color, 0.75);
                     }
                 }
+            }
+            DisplayItem::Image(r) => {
+                
             }
         }
     }
@@ -352,7 +356,7 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
     }
 
     println!("CSS total: {} bytes", css_text.len());
-    // println!("--- UA_CSS start ---\n{}\n--- UA_CSS end ---", css_text);
+    println!("--- UA_CSS start ---\n{}\n--- UA_CSS end ---", css_text);
 
     // style tree
     let stylesheet = css::Parser::new(css_text).parse_stylesheet();

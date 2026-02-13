@@ -5,6 +5,7 @@ use fontdue::Font;
 pub enum DisplayItem {
     Rect(DrawRect),
     Text(DrawText),
+    Image(DrawImage),
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +32,16 @@ pub struct DrawText {
 
     pub href: Option<String>,
     pub hit: crate::layout::Rect,
+}
+
+#[derive(Debug, Clone)]
+pub struct DrawImage {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub src: String,         // ★画像URL（相対なら解決済みを入れるのが理想）
+    pub key: String,         // ★キャッシュキー（同じ画像を再利用）
 }
 
 const UNDERLINE_THICKNESS: f32 = 1.5;
@@ -207,7 +218,31 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font) {
             }
         }
     }
-
+    // img を描画アイテムにする
+    if let Some(sn) = node.get_style_node() {
+        if let crate::dom::NodeType::Element(ed) = &sn.node.node_type {
+            if ed.tag_name == "img" {
+                let c = &node.dimensions.content;
+                if c.width > 0.0 && c.height > 0.0 {
+                    if let Some(src) = ed.attributes.get("src") {
+                        let src = src.trim();
+                        if !src.is_empty() {
+                            // key は単純に src でOK（本当は resolve 後の絶対URL推奨）
+                            let key = src.to_string();
+                            out.push(DisplayItem::Image(DrawImage {
+                                x: c.x,
+                                y: c.y,
+                                w: c.width,
+                                h: c.height,
+                                src: src.to_string(),
+                                key,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
     for child in &node.children {
         walk(child, out, font);
     }
@@ -279,7 +314,14 @@ fn collect_descendant_text_bounds(node: &LayoutBox) -> Option<crate::layout::Rec
     let mut max_y = f32::NEG_INFINITY;
 
     let mut any = false;
-    collect_descendant_text_bounds_rec(node, &mut min_x, &mut min_y, &mut max_x, &mut max_y, &mut any);
+    collect_descendant_text_bounds_rec(
+        node,
+        &mut min_x,
+        &mut min_y,
+        &mut max_x,
+        &mut max_y,
+        &mut any,
+    );
 
     if !any {
         return None;
@@ -332,15 +374,26 @@ fn padding_trbl(sn: &crate::style::StyledNode) -> (f32, f32, f32, f32) {
     // shorthand
     if let Some(v) = sn.value("padding") {
         if let Some((a, b, c, d)) = parse_trbl_px(v) {
-            pt = a; pr = b; pb = c; pl = d;
+            pt = a;
+            pr = b;
+            pb = c;
+            pl = d;
         }
     }
 
     // longhands override
-    if let Some(v) = sn.value("padding-top").and_then(|v| parse_px(v)) { pt = v; }
-    if let Some(v) = sn.value("padding-right").and_then(|v| parse_px(v)) { pr = v; }
-    if let Some(v) = sn.value("padding-bottom").and_then(|v| parse_px(v)) { pb = v; }
-    if let Some(v) = sn.value("padding-left").and_then(|v| parse_px(v)) { pl = v; }
+    if let Some(v) = sn.value("padding-top").and_then(|v| parse_px(v)) {
+        pt = v;
+    }
+    if let Some(v) = sn.value("padding-right").and_then(|v| parse_px(v)) {
+        pr = v;
+    }
+    if let Some(v) = sn.value("padding-bottom").and_then(|v| parse_px(v)) {
+        pb = v;
+    }
+    if let Some(v) = sn.value("padding-left").and_then(|v| parse_px(v)) {
+        pl = v;
+    }
 
     (pt, pr, pb, pl)
 }

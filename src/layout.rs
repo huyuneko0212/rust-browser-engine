@@ -98,31 +98,34 @@ impl LayoutBox {
         self.dimensions.content.width = containing_block.content.width;
         self.dimensions.content.height = 0.0;
 
-        // ★IFC: inline を行に詰めて子(InlineNode/Text)の位置と自分の高さを決める
+        // ★IFC: inline を行に詰めて子(InlineNode/Text/img)の位置と自分の高さを決める
         self.layout_inline_formatting_context(font);
     }
 
     fn layout_inline_leaf_fallback(&mut self, containing_block: Dimensions, font: &Font) {
-        // “トップがText” などの救済（通常は anonymous IFC 内で配置される）
-        let (font_size, line_h, text_opt) = if let Some(sn) = self.get_style_node() {
+        // “トップがText/img” などの救済（通常は anonymous IFC 内で配置される）
+        let (font_size, line_h, text_opt, img_opt) = if let Some(sn) = self.get_style_node() {
             let fs = font_size_px(sn).unwrap_or(16.0);
             let lh = line_height_px(sn, fs);
 
-            let txt = match &sn.node.node_type {
+            match &sn.node.node_type {
                 crate::dom::NodeType::Text(t) => {
                     let s = t.trim();
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(s.to_string())
-                    }
+                    (
+                        fs,
+                        lh,
+                        if s.is_empty() { None } else { Some(s.to_string()) },
+                        None,
+                    )
                 }
-                _ => None,
-            };
-
-            (fs, lh, txt)
+                crate::dom::NodeType::Element(ed) if ed.tag_name == "img" => {
+                    let (w, h) = img_intrinsic_size_px(sn);
+                    (fs, lh, None, Some((w, h)))
+                }
+                _ => (fs, lh, None, None),
+            }
         } else {
-            (16.0, 16.0 * 1.2, None)
+            (16.0, 16.0 * 1.2, None, None)
         };
 
         let d = &mut self.dimensions;
@@ -136,6 +139,12 @@ impl LayoutBox {
             d.content.height = line_h;
         } else {
             d.content.height = line_h;
+        }
+
+        if let Some((iw, ih)) = img_opt {
+            d.content.width = iw.max(1.0).min(containing_block.content.width.max(1.0));
+            d.content.height = ih.max(1.0);
+            return;
         }
     }
 
@@ -426,27 +435,54 @@ impl LayoutBox {
             match &mut node.box_type {
                 BoxType::InlineNode(_) => {
                     // Text葉なら配置。Element inline は子へ降りる
-                    let (is_text, text, font_size, line_h) = if let Some(sn) = node.get_style_node()
-                    {
-                        let fs = font_size_px(sn).unwrap_or(16.0);
-                        let lh = line_height_px(sn, fs);
-                        match &sn.node.node_type {
-                            crate::dom::NodeType::Text(t) => {
-                                // ★空白を1個に畳む（HTMLの基本）
-                                let collapsed = collapse_whitespace(t);
+                    let (is_text, text, font_size, line_h, img_opt) =
+                        if let Some(sn) = node.get_style_node() {
+                            let fs = font_size_px(sn).unwrap_or(16.0);
+                            let lh = line_height_px(sn, fs);
 
-                                // 目に見える文字が無ければ「空白1個」扱い（幅は取る）
-                                if collapsed.trim().is_empty() {
-                                    (true, Some(" ".to_string()), fs, lh)
-                                } else {
-                                    (true, Some(collapsed.trim().to_string()), fs, lh)
+                            match &sn.node.node_type {
+                                crate::dom::NodeType::Text(t) => {
+                                    // ★空白を1個に畳む（HTMLの基本）
+                                    let collapsed = collapse_whitespace(t);
+
+                                    // 目に見える文字が無ければ「空白1個」扱い（幅は取る）
+                                    if collapsed.trim().is_empty() {
+                                        (true, Some(" ".to_string()), fs, lh, None)
+                                    } else {
+                                        (true, Some(collapsed.trim().to_string()), fs, lh, None)
+                                    }
                                 }
+                                crate::dom::NodeType::Element(ed) if ed.tag_name == "img" => {
+                                    let (w, h) = img_intrinsic_size_px(sn);
+                                    (false, None, fs, lh, Some((w, h)))
+                                }
+                                _ => (false, None, fs, lh, None),
                             }
-                            _ => (false, None, fs, lh),
+                        } else {
+                            (false, None, 16.0, 16.0 * 1.2, None)
+                        };
+
+                    // ★img leaf（置換要素）を inline 1要素として配置
+                    if let Some((iw, ih)) = img_opt {
+                        let iw = iw.max(1.0);
+                        let ih = ih.max(1.0);
+
+                        // 折り返し
+                        if *cursor_x > start_x && *cursor_x + iw > start_x + max_w {
+                            *cursor_x = start_x;
+                            *cursor_y += (*current_line_h).max(ih);
+                            *current_line_h = 0.0;
                         }
-                    } else {
-                        (false, None, 16.0, 16.0 * 1.2)
-                    };
+
+                        node.dimensions.content.x = *cursor_x;
+                        node.dimensions.content.y = *cursor_y;
+                        node.dimensions.content.width = iw;
+                        node.dimensions.content.height = ih;
+
+                        *cursor_x += iw;
+                        *current_line_h = (*current_line_h).max(ih);
+                        return;
+                    }
 
                     if is_text {
                         if let Some(txt) = text {
@@ -703,6 +739,34 @@ fn parse_px(s: &str) -> Option<f32> {
         return num.trim().parse::<f32>().ok();
     }
     None
+}
+
+/// ★img の最小 intrinsic size
+/// 優先順位:
+/// 1) CSS width/height (px)
+/// 2) HTML attributes width/height (数値)
+/// 3) fallback 300x150
+fn img_intrinsic_size_px(sn: &crate::style::StyledNode) -> (f32, f32) {
+    let css_w = sn.value("width").and_then(|v| parse_px(v));
+    let css_h = sn.value("height").and_then(|v| parse_px(v));
+
+    let (attr_w, attr_h) = if let crate::dom::NodeType::Element(ed) = &sn.node.node_type {
+        let w = ed
+            .attributes
+            .get("width")
+            .and_then(|s| s.trim().parse::<f32>().ok());
+        let h = ed
+            .attributes
+            .get("height")
+            .and_then(|s| s.trim().parse::<f32>().ok());
+        (w, h)
+    } else {
+        (None, None)
+    };
+
+    let w = css_w.or(attr_w).unwrap_or(300.0);
+    let h = css_h.or(attr_h).unwrap_or(150.0);
+    (w, h)
 }
 
 /// styleノードから Text を集める（leaf block の救済用）

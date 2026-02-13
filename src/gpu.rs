@@ -4,7 +4,8 @@ use std::fs;
 use wgpu::*;
 use winit::window::Window;
 
-use crate::display::{DisplayItem, DrawRect, DrawText};
+use crate::display::{DisplayItem, DrawRect, DrawText, DrawImage};
+use image::GenericImageView;
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -66,6 +67,33 @@ impl TextVertex {
     }
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct ImageVertex {
+    pos: [f32; 2],
+    uv: [f32; 2],
+}
+impl ImageVertex {
+    fn layout<'a>() -> VertexBufferLayout<'a> {
+        VertexBufferLayout {
+            array_stride: std::mem::size_of::<ImageVertex>() as BufferAddress,
+            step_mode: VertexStepMode::Vertex,
+            attributes: &[
+                VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: VertexFormat::Float32x2,
+                },
+                VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 2]>() as BufferAddress,
+                    shader_location: 1,
+                    format: VertexFormat::Float32x2,
+                },
+            ],
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct GlyphEntry {
     u0: f32,
@@ -119,6 +147,12 @@ impl AtlasPacker {
     }
 }
 
+struct CachedImage {
+    bind_group: BindGroup,
+    _view: TextureView, // view を保持しておく（bind_group が参照するので寿命管理）
+    _tex: Texture,      // texture も保持
+}
+
 pub struct GPU<'a> {
     pub surface: Surface<'a>,
     pub device: Device,
@@ -134,6 +168,14 @@ pub struct GPU<'a> {
     text_pipeline: RenderPipeline,
     text_vbuf: Buffer,
     text_cap: usize,
+
+    // image pipeline
+    image_pipeline: RenderPipeline,
+    image_vbuf: Buffer,
+    image_cap: usize,
+    image_bgl: BindGroupLayout,
+    image_sampler: Sampler,
+    image_cache: HashMap<String, CachedImage>,
 
     // glyph atlas
     atlas_tex: Texture,
@@ -345,6 +387,81 @@ impl<'a> GPU<'a> {
             mapped_at_creation: false,
         });
 
+        // ---------- image sampler / bgl / pipeline ----------
+        let image_sampler = device.create_sampler(&SamplerDescriptor {
+            label: Some("image sampler"),
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let image_bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("image bgl"),
+            entries: &[
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: TextureViewDimension::D2,
+                        sample_type: TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        let image_shader = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("image shader"),
+            source: ShaderSource::Wgsl(include_str!("image.wgsl").into()),
+        });
+
+        let image_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("image layout"),
+            bind_group_layouts: &[&image_bgl],
+            push_constant_ranges: &[],
+        });
+
+        let image_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("image pipeline"),
+            layout: Some(&image_layout),
+            vertex: VertexState {
+                module: &image_shader,
+                entry_point: "vs_main",
+                buffers: &[ImageVertex::layout()],
+            },
+            fragment: Some(FragmentState {
+                module: &image_shader,
+                entry_point: "fs_main",
+                targets: &[Some(ColorTargetState {
+                    format: config.format,
+                    blend: Some(BlendState::ALPHA_BLENDING),
+                    write_mask: ColorWrites::ALL,
+                })],
+            }),
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            multiview: None,
+        });
+
+        let image_cap = 12_000usize;
+        let image_vbuf = device.create_buffer(&BufferDescriptor {
+            label: Some("image vbuf"),
+            size: (image_cap * std::mem::size_of::<ImageVertex>()) as BufferAddress,
+            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Self {
             surface,
             device,
@@ -358,6 +475,13 @@ impl<'a> GPU<'a> {
             text_pipeline,
             text_vbuf,
             text_cap,
+
+            image_pipeline,
+            image_vbuf,
+            image_cap,
+            image_bgl,
+            image_sampler,
+            image_cache: HashMap::new(),
 
             atlas_tex,
             atlas_view,
@@ -383,25 +507,42 @@ impl<'a> GPU<'a> {
         // 分解
         let mut rects: Vec<DrawRect> = Vec::new();
         let mut texts: Vec<DrawText> = Vec::new();
+        let mut images: Vec<DrawImage> = Vec::new();
 
         for it in items {
             match it {
                 DisplayItem::Rect(r) => rects.push(r.clone()),
                 DisplayItem::Text(t) => texts.push(t.clone()),
+                DisplayItem::Image(im) => images.push(im.clone()),
             }
         }
 
-        // ★ scroll_y を渡す
+        // ★先に image のキャッシュを作る（bind_group が必要）
+        // ここでは「ファイルパス src」を前提に読み込む
+        // 失敗した画像は描画スキップ
+        let mut drawable_images: Vec<DrawImage> = Vec::new();
+        for im in &images {
+            let _ = self.get_or_upload_image(&im.key, &im.src);
+            if self.image_cache.contains_key(&im.key) {
+                drawable_images.push(im.clone());
+            }
+        }
+
         let rect_verts = self.rect_vertices(&rects, scroll_y);
+        let image_verts = self.image_vertices(&drawable_images, scroll_y);
         let text_verts = self.text_vertices(&texts, scroll_y);
 
-        // vbuf拡張（雑だけど安定）
         self.ensure_rect_capacity(rect_verts.len());
+        self.ensure_image_capacity(image_verts.len());
         self.ensure_text_capacity(text_verts.len());
 
         if !rect_verts.is_empty() {
             self.queue
                 .write_buffer(&self.rect_vbuf, 0, bytemuck::cast_slice(&rect_verts));
+        }
+        if !image_verts.is_empty() {
+            self.queue
+                .write_buffer(&self.image_vbuf, 0, bytemuck::cast_slice(&image_verts));
         }
         if !text_verts.is_empty() {
             self.queue
@@ -416,9 +557,7 @@ impl<'a> GPU<'a> {
             }
         };
 
-        let view = output
-            .texture
-            .create_view(&TextureViewDescriptor::default());
+        let view = output.texture.create_view(&TextureViewDescriptor::default());
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor {
@@ -446,14 +585,29 @@ impl<'a> GPU<'a> {
                 timestamp_writes: None,
             });
 
-            // rect
+            // rect（背景）
             if !rect_verts.is_empty() {
                 pass.set_pipeline(&self.rect_pipeline);
                 pass.set_vertex_buffer(0, self.rect_vbuf.slice(..));
                 pass.draw(0..(rect_verts.len() as u32), 0..1);
             }
 
-            // text
+            // image（中景）: 画像ごとに bind_group 切替
+            if !image_verts.is_empty() && !drawable_images.is_empty() {
+                pass.set_pipeline(&self.image_pipeline);
+                pass.set_vertex_buffer(0, self.image_vbuf.slice(..));
+
+                // 画像ごとに6頂点(=1quad)を描く前提
+                for (i, im) in drawable_images.iter().enumerate() {
+                    if let Some(cached) = self.image_cache.get(&im.key) {
+                        pass.set_bind_group(0, &cached.bind_group, &[]);
+                        let start = (i * 6) as u32;
+                        pass.draw(start..(start + 6), 0..1);
+                    }
+                }
+            }
+
+            // text（前景）
             if !text_verts.is_empty() {
                 pass.set_pipeline(&self.text_pipeline);
                 pass.set_bind_group(0, &self.atlas_bind_group, &[]);
@@ -500,6 +654,19 @@ impl<'a> GPU<'a> {
         }
     }
 
+    fn ensure_image_capacity(&mut self, need: usize) {
+        let need = need.max(1);
+        if need > self.image_cap {
+            self.image_cap = need.next_power_of_two();
+            self.image_vbuf = self.device.create_buffer(&BufferDescriptor {
+                label: Some("image vbuf resized"),
+                size: (self.image_cap * std::mem::size_of::<ImageVertex>()) as BufferAddress,
+                usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+    }
+
     fn rect_vertices(&self, rects: &[DrawRect], scroll_y: f32) -> Vec<RectVertex> {
         let mut out = Vec::with_capacity(rects.len() * 6);
 
@@ -511,20 +678,15 @@ impl<'a> GPU<'a> {
                 continue;
             }
 
-            // doc座標 -> 画面座標
             let ry = r.y - scroll_y;
 
-            // 完全に画面外ならスキップ
-            // y方向
             if ry > h || (ry + r.h) < 0.0 {
                 continue;
             }
-            // x方向（念のため）
             if r.x > w || (r.x + r.w) < 0.0 {
                 continue;
             }
 
-            // pixel -> NDC
             let x1 = (r.x / w) * 2.0 - 1.0;
             let y1 = 1.0 - (ry / h) * 2.0;
             let x2 = ((r.x + r.w) / w) * 2.0 - 1.0;
@@ -532,38 +694,56 @@ impl<'a> GPU<'a> {
 
             let c = r.color;
 
-            out.push(RectVertex {
-                pos: [x1, y1],
-                color: c,
-            });
-            out.push(RectVertex {
-                pos: [x2, y1],
-                color: c,
-            });
-            out.push(RectVertex {
-                pos: [x2, y2],
-                color: c,
-            });
+            out.push(RectVertex { pos: [x1, y1], color: c });
+            out.push(RectVertex { pos: [x2, y1], color: c });
+            out.push(RectVertex { pos: [x2, y2], color: c });
 
-            out.push(RectVertex {
-                pos: [x1, y1],
-                color: c,
-            });
-            out.push(RectVertex {
-                pos: [x2, y2],
-                color: c,
-            });
-            out.push(RectVertex {
-                pos: [x1, y2],
-                color: c,
-            });
+            out.push(RectVertex { pos: [x1, y1], color: c });
+            out.push(RectVertex { pos: [x2, y2], color: c });
+            out.push(RectVertex { pos: [x1, y2], color: c });
+        }
+
+        out
+    }
+
+    fn image_vertices(&self, images: &[DrawImage], scroll_y: f32) -> Vec<ImageVertex> {
+        let mut out = Vec::with_capacity(images.len() * 6);
+
+        let w = self.config.width as f32;
+        let h = self.config.height as f32;
+
+        for im in images {
+            if im.w <= 0.0 || im.h <= 0.0 {
+                continue;
+            }
+
+            let ry = im.y - scroll_y;
+            if ry > h || (ry + im.h) < 0.0 { continue; }
+            if im.x > w || (im.x + im.w) < 0.0 { continue; }
+
+            let x1 = (im.x / w) * 2.0 - 1.0;
+            let y1 = 1.0 - (ry / h) * 2.0;
+            let x2 = ((im.x + im.w) / w) * 2.0 - 1.0;
+            let y2 = 1.0 - ((ry + im.h) / h) * 2.0;
+
+            let u0 = 0.0;
+            let v0 = 0.0;
+            let u1 = 1.0;
+            let v1 = 1.0;
+
+            out.push(ImageVertex { pos: [x1, y1], uv: [u0, v0] });
+            out.push(ImageVertex { pos: [x2, y1], uv: [u1, v0] });
+            out.push(ImageVertex { pos: [x2, y2], uv: [u1, v1] });
+
+            out.push(ImageVertex { pos: [x1, y1], uv: [u0, v0] });
+            out.push(ImageVertex { pos: [x2, y2], uv: [u1, v1] });
+            out.push(ImageVertex { pos: [x1, y2], uv: [u0, v1] });
         }
 
         out
     }
 
     fn text_vertices(&mut self, texts: &[DrawText], scroll_y: f32) -> Vec<TextVertex> {
-        // ざっくり：1文字 = quad(6頂点)
         let mut out = Vec::new();
 
         let w = self.config.width as f32;
@@ -574,11 +754,8 @@ impl<'a> GPU<'a> {
             let key_size = size_px.round() as u32;
 
             let mut pen_x = t.x;
-
-            // ★doc座標 → 画面座標
             let baseline_y = t.y - scroll_y;
 
-            // ★行が完全に画面外ならスキップ（軽量化）
             let top = t.hit.y - scroll_y;
             let bottom = top + t.hit.height;
             if bottom < 0.0 || top > h {
@@ -593,11 +770,9 @@ impl<'a> GPU<'a> {
 
                 let ge = self.get_or_upload_glyph(ch, key_size);
 
-                // glyphの描画位置（超簡易）
                 let gx = pen_x + ge.xmin as f32;
                 let gy = baseline_y - (ge.h as f32) - ge.ymin as f32;
 
-                // ★画面外なら頂点を作らず advance だけ進める
                 if gy > h || (gy + ge.h as f32) < 0.0 || gx > w || (gx + ge.w as f32) < 0.0 {
                     pen_x += ge.advance;
                     continue;
@@ -614,38 +789,13 @@ impl<'a> GPU<'a> {
                 let v1 = ge.v1;
                 let c = t.color;
 
-                // quad (2 triangles)
-                out.push(TextVertex {
-                    pos: [x1, y1],
-                    uv: [u0, v0],
-                    color: c,
-                });
-                out.push(TextVertex {
-                    pos: [x2, y1],
-                    uv: [u1, v0],
-                    color: c,
-                });
-                out.push(TextVertex {
-                    pos: [x2, y2],
-                    uv: [u1, v1],
-                    color: c,
-                });
+                out.push(TextVertex { pos: [x1, y1], uv: [u0, v0], color: c });
+                out.push(TextVertex { pos: [x2, y1], uv: [u1, v0], color: c });
+                out.push(TextVertex { pos: [x2, y2], uv: [u1, v1], color: c });
 
-                out.push(TextVertex {
-                    pos: [x1, y1],
-                    uv: [u0, v0],
-                    color: c,
-                });
-                out.push(TextVertex {
-                    pos: [x2, y2],
-                    uv: [u1, v1],
-                    color: c,
-                });
-                out.push(TextVertex {
-                    pos: [x1, y2],
-                    uv: [u0, v1],
-                    color: c,
-                });
+                out.push(TextVertex { pos: [x1, y1], uv: [u0, v0], color: c });
+                out.push(TextVertex { pos: [x2, y2], uv: [u1, v1], color: c });
+                out.push(TextVertex { pos: [x1, y2], uv: [u0, v1], color: c });
 
                 pen_x += ge.advance;
             }
@@ -663,7 +813,6 @@ impl<'a> GPU<'a> {
         let gw = metrics.width as u32;
         let gh = metrics.height as u32;
 
-        // bitmapが空の時（スペース等）
         if gw == 0 || gh == 0 {
             let e = GlyphEntry {
                 u0: 0.0,
@@ -680,13 +829,11 @@ impl<'a> GPU<'a> {
             return e;
         }
 
-        // atlasに配置
         let (ax, ay) = self
             .packer
             .alloc(gw, gh, 1)
             .expect("atlas full (increase atlas size)");
 
-        // R8 に書き込み
         self.queue.write_texture(
             ImageCopyTexture {
                 texture: &self.atlas_tex,
@@ -727,12 +874,86 @@ impl<'a> GPU<'a> {
         self.glyph_cache.insert((ch, size_px), e);
         e
     }
+
+    fn get_or_upload_image(&mut self, key: &str, src: &str) -> Option<&CachedImage> {
+        if self.image_cache.contains_key(key) {
+            return self.image_cache.get(key);
+        }
+
+        // まずはローカル画像（src=ファイルパス）だけ対応
+        let bytes = fs::read(src).ok()?;
+        let img = image::load_from_memory(&bytes).ok()?;
+        let rgba = img.to_rgba8();
+        let (iw, ih) = img.dimensions();
+
+        let tex = self.device.create_texture(&TextureDescriptor {
+            label: Some("img tex"),
+            size: Extent3d {
+                width: iw,
+                height: ih,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8UnormSrgb,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        self.queue.write_texture(
+            ImageCopyTexture {
+                texture: &tex,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            &rgba,
+            ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(iw * 4),
+                rows_per_image: Some(ih),
+            },
+            Extent3d {
+                width: iw,
+                height: ih,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let view = tex.create_view(&TextureViewDescriptor::default());
+
+        let bg = self.device.create_bind_group(&BindGroupDescriptor {
+            label: Some("img bind group"),
+            layout: &self.image_bgl,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&self.image_sampler),
+                },
+            ],
+        });
+
+        self.image_cache.insert(
+            key.to_string(),
+            CachedImage {
+                bind_group: bg,
+                _view: view,
+                _tex: tex,
+            },
+        );
+
+        self.image_cache.get(key)
+    }
 }
 
 // ----------------- font loader -----------------
 
 fn load_meiryo_font() -> fontdue::Font {
-    // まずMeiryo TTC（日本語OK）
     let candidates = [
         r"C:\Windows\Fonts\meiryo.ttc",
         r"C:\Windows\Fonts\meiryob.ttc",
@@ -743,7 +964,7 @@ fn load_meiryo_font() -> fontdue::Font {
     for p in candidates {
         if let Ok(bytes) = fs::read(p) {
             let settings = fontdue::FontSettings {
-                collection_index: 0, // TTCの0番（重要）
+                collection_index: 0,
                 ..Default::default()
             };
             if let Ok(font) = fontdue::Font::from_bytes(bytes, settings) {
