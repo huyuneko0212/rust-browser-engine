@@ -21,6 +21,27 @@ use winit::{
 
 use crate::{display::DisplayItem, gpu::GPU};
 
+// ★追加：最小UAスタイル（pxのみ）
+const UA_CSS: &str = r#"
+/* --- minimal UA stylesheet (px only) --- */
+html, body { display: block; margin: 8px; padding: 0; background: #ffffff; color: #111111; }
+body { line-height: 1.35; }
+
+a { color: #0645ad; text-decoration: underline; }
+a:visited { color: #0b0080; }
+
+h1 { display: block; font-size: 32px; margin: 16px 0; }
+h2 { display: block; font-size: 24px; margin: 14px 0; }
+h3 { display: block; font-size: 18px; margin: 12px 0; }
+
+p { display: block; margin: 10px 0; }
+
+ul, ol { display: block; margin: 10px 0 10px 18px; padding: 0; }
+li { display: block; margin: 4px 0; }
+
+small { font-size: 12px; }
+"#;
+
 // -------------------------
 // <style> 抽出
 // -------------------------
@@ -253,8 +274,10 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
     let dom_root = html::parse(response.body);
     println!("DOM生成完了");
 
-    // 2) CSS抽出（<style> + <link rel=stylesheet> + @import展開）
-    let mut css_text = String::new();
+    // 2) CSS抽出（UA CSS + <style> + <link rel=stylesheet> + @import展開）
+    let mut css_text = String::from(UA_CSS);
+    css_text.push('\n');
+
     extract_style_text(&dom_root, &mut css_text);
 
     let mut css_links: Vec<String> = Vec::new();
@@ -321,7 +344,6 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
     viewport.content.width = 800.0;
     viewport.content.height = 600.0;
 
-    // ここは既存のまま（本当はGPUが持ってるfontを使うのが理想だが、最小差分優先）
     let font_bytes = std::fs::read("C:\\Windows\\Fonts\\meiryo.ttc").unwrap();
     let font = fontdue::Font::from_bytes(font_bytes, fontdue::FontSettings::default()).unwrap();
 
@@ -419,6 +441,11 @@ fn main() {
                         if button == MouseButton::Left && st == ElementState::Pressed {
                             if let Some(href) = hit_test_link(&state.display_list, mouse_x, mouse_y)
                             {
+                                // ★遷移前にhoverをリセット（色残り防止）
+                                hovered_href = None;
+                                apply_hover(&mut state.display_list, None);
+                                window.set_cursor_icon(CursorIcon::Default);
+
                                 let next = state.url.resolve_location(&href);
                                 state.navigate(next);
                             }
