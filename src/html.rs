@@ -71,10 +71,13 @@ impl Parser {
         self.consume_while(|c| c.is_whitespace());
     }
 
+    // ★ tag_name は常に小文字で返す
     fn parse_tag_name(&mut self) -> String {
         self.consume_while(|c| c.is_alphanumeric())
+            .to_ascii_lowercase()
     }
 
+    // ★ peek も小文字で返す
     fn peek_start_tag_name(&self) -> Option<String> {
         let s = &self.input[self.pos..];
         if !s.starts_with('<') {
@@ -96,9 +99,14 @@ impl Parser {
             }
         }
 
-        if name.is_empty() { None } else { Some(name) }
+        if name.is_empty() {
+            None
+        } else {
+            Some(name.to_ascii_lowercase())
+        }
     }
 
+    // ★ peek も小文字で返す
     fn peek_end_tag_name(&self) -> Option<String> {
         let s = &self.input[self.pos..];
         if !s.starts_with("</") {
@@ -117,7 +125,11 @@ impl Parser {
             }
         }
 
-        if name.is_empty() { None } else { Some(name) }
+        if name.is_empty() {
+            None
+        } else {
+            Some(name.to_ascii_lowercase())
+        }
     }
 
     fn parse_text(&mut self) -> Node {
@@ -141,11 +153,15 @@ impl Parser {
         self.parse_text()
     }
 
-    fn consume_raw_text_until_end_tag(&mut self, tag: &str) -> String {
-        let end = format!("</{}>", tag);
+    fn consume_raw_text_until_end_tag(&mut self, tag_lc: &str) -> String {
+        // ★ tag は小文字前提で end を作る
+        let end = format!("</{}>", tag_lc);
         let mut out = String::new();
 
         while !self.eof() {
+            // HTMLは閉じタグの大小文字を区別しないので、
+            // ここは「原文に end がそのままある」前提の超簡易。
+            // ただし parse_tag_name 自体は小文字化するので、通常は大丈夫。
             if self.input[self.pos..].starts_with(&end) {
                 for _ in 0..end.chars().count() {
                     self.consume_char();
@@ -158,7 +174,7 @@ impl Parser {
     }
 
     // -----------------------------
-    // ✅ attributes パース
+    // attributes パース
     // -----------------------------
     fn parse_attributes(&mut self) -> HashMap<String, String> {
         let mut attrs = HashMap::new();
@@ -176,12 +192,14 @@ impl Parser {
             }
 
             // key
-            let key = self.consume_while(|ch| ch.is_alphanumeric() || ch == '-' || ch == '_');
-            if key.is_empty() {
-                // 変な文字なら1文字食って抜ける
+            let key_raw = self.consume_while(|ch| ch.is_alphanumeric() || ch == '-' || ch == '_');
+            if key_raw.is_empty() {
                 self.consume_char();
                 continue;
             }
+
+            // ★ 属性名は小文字化（class / id / href 等が安定する）
+            let key = key_raw.to_ascii_lowercase();
 
             self.consume_whitespace();
 
@@ -223,9 +241,11 @@ impl Parser {
 
     fn parse_element(&mut self) -> Node {
         assert!(self.consume_char() == '<');
+
+        // ★ ここで小文字化済み
         let tag_name = self.parse_tag_name();
 
-        // ✅ 属性
+        // attributes
         let attrs = self.parse_attributes();
 
         // self-closing: "/>"
@@ -241,7 +261,7 @@ impl Parser {
             self.consume_char();
         }
 
-        // Voidタグ（閉じタグなし）
+        // Voidタグ（閉じタグなし）: ★小文字前提
         let void_tags = [
             "meta", "img", "br", "hr", "input", "link", "area", "base", "col", "embed", "param",
             "source", "track", "wbr",
@@ -250,7 +270,7 @@ impl Parser {
             return elem(tag_name, attrs, vec![]);
         }
 
-        // raw text element: script/style は “中身をHTMLとして解析しない”
+        // raw text element: script/style
         if tag_name == "script" || tag_name == "style" {
             let raw = self.consume_raw_text_until_end_tag(&tag_name);
             return elem(tag_name, attrs, vec![text(raw)]);
@@ -262,7 +282,7 @@ impl Parser {
         if self.starts_with("</") {
             self.consume_char(); // <
             self.consume_char(); // /
-            let end_tag = self.parse_tag_name();
+            let end_tag = self.parse_tag_name(); // ★小文字化される
 
             self.consume_while(|c| c != '>');
             if !self.eof() {
@@ -310,6 +330,7 @@ impl Parser {
             // <p> の中でブロック要素が来たら </p> 省略とみなす
             if parent_tag == Some("p") && self.next_char() == '<' {
                 if let Some(next_tag) = self.peek_start_tag_name() {
+                    // ★ next_tag は小文字
                     if is_block_tag(&next_tag) {
                         break;
                     }
@@ -323,23 +344,23 @@ impl Parser {
     }
 }
 
-fn is_block_tag(tag: &str) -> bool {
+fn is_block_tag(tag_lc: &str) -> bool {
+    // ★小文字前提
     matches!(
-        tag,
+        tag_lc,
         "html" | "body" | "div" | "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol"
             | "li" | "section" | "header" | "footer" | "main" | "article" | "nav" | "table"
             | "form" | "pre"
     )
 }
+
 fn decode_entities(input: &str) -> String {
-    // "&...;" を見つけたら置換していく（最小実装）
     let mut out = String::with_capacity(input.len());
     let chars: Vec<char> = input.chars().collect();
     let mut i = 0;
 
     while i < chars.len() {
         if chars[i] == '&' {
-            // 次の ';' を探す（最大で 32 文字くらいまで）
             let mut j = i + 1;
             let mut found = None;
             while j < chars.len() && j - i <= 32 {
@@ -357,7 +378,6 @@ fn decode_entities(input: &str) -> String {
                     i = end + 1;
                     continue;
                 }
-                // デコードできなかったらそのまま出す
                 out.push('&');
                 i += 1;
                 continue;
@@ -372,7 +392,6 @@ fn decode_entities(input: &str) -> String {
 }
 
 fn decode_one_entity(entity: &str) -> Option<String> {
-    // named entities（最小）
     match entity {
         "amp" => return Some("&".to_string()),
         "lt" => return Some("<".to_string()),
@@ -383,14 +402,11 @@ fn decode_one_entity(entity: &str) -> Option<String> {
         _ => {}
     }
 
-    // numeric entities: &#1234; / &#x1F600;
     if let Some(num) = entity.strip_prefix('#') {
         if let Some(hex) = num.strip_prefix('x').or_else(|| num.strip_prefix('X')) {
-            // hex
             let v = u32::from_str_radix(hex, 16).ok()?;
             return char::from_u32(v).map(|c| c.to_string());
         } else {
-            // decimal
             let v = num.parse::<u32>().ok()?;
             return char::from_u32(v).map(|c| c.to_string());
         }
@@ -398,4 +414,3 @@ fn decode_one_entity(entity: &str) -> Option<String> {
 
     None
 }
-

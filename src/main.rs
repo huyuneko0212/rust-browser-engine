@@ -352,6 +352,7 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
     }
 
     println!("CSS total: {} bytes", css_text.len());
+    println!("--- UA_CSS start ---\n{}\n--- UA_CSS end ---", css_text);
 
     // style tree
     let stylesheet = css::Parser::new(css_text).parse_stylesheet();

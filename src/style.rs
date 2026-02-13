@@ -117,20 +117,76 @@ fn is_block_element(tag: &str) -> bool {
     )
 }
 
+// =========================================================
+// descendant selector のための祖先情報
+// =========================================================
+
+#[derive(Debug, Clone)]
+struct Ancestor {
+    tag: String,
+    id: Option<String>,
+    classes: Vec<String>,
+}
+
+fn ancestor_of(e: &ElementData) -> Ancestor {
+    Ancestor {
+        tag: e.tag_name.clone(),
+        id: e.id().map(|s| s.to_string()),
+        classes: e.classes().iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+// =========================================================
+// ★ 継承するプロパティ（最小）
+// =========================================================
+
+fn is_inheritable_prop(name: &str) -> bool {
+    matches!(
+        name,
+        "color"
+            | "font-size"
+            | "font-family"
+            | "font-weight"
+            | "line-height"
+            | "text-decoration"
+    )
+}
+
+fn inherit_only(values: &HashMap<String, String>) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for (k, v) in values {
+        if is_inheritable_prop(k.as_str()) {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    out
+}
+
+// =========================================================
+
 pub fn style_tree(root: Node, stylesheet: &Stylesheet) -> StyledNode {
-    style_tree_with_ctx(root, stylesheet, None)
+    style_tree_with_ctx(root, stylesheet, None, &Vec::new(), &HashMap::new())
 }
 
 fn style_tree_with_ctx(
     root: Node,
     stylesheet: &Stylesheet,
     inherited_link: Option<String>,
+    ancestors: &Vec<Ancestor>,
+    inherited_values: &HashMap<String, String>,
 ) -> StyledNode {
-    let specified_values = match root.node_type {
-        NodeType::Element(ref e) => specified_values_for(e, stylesheet),
-        NodeType::Text(_) => HashMap::new(),
-    };
+    // まず継承値をベースにする（Textにも効く）
+    let mut specified_values = inherited_values.clone();
 
+    // Elementなら、自分に当たるCSSで上書き
+    if let NodeType::Element(ref e) = root.node_type {
+        let own = specified_values_for(e, stylesheet, ancestors);
+        for (k, v) in own {
+            specified_values.insert(k, v);
+        }
+    }
+
+    // link 継承（a の href を子孫テキストへ渡す）
     let mut link_here = inherited_link.clone();
     if let NodeType::Element(ref e) = root.node_type {
         if e.tag_name == "a" {
@@ -147,13 +203,36 @@ fn style_tree_with_ctx(
         }
     }
 
-    let children = root.children
+    // 子へ渡す ancestor stack
+    let mut next_ancestors = ancestors.clone();
+    if let NodeType::Element(ref e) = root.node_type {
+        next_ancestors.push(ancestor_of(e));
+    }
+
+    // ★ 子へ渡す継承値（継承プロパティだけ）
+    let next_inherited_values = inherit_only(&specified_values);
+
+    let children = root
+        .children
         .iter()
         .cloned()
-        .map(|c| style_tree_with_ctx(c, stylesheet, link_here.clone()))
+        .map(|c| {
+            style_tree_with_ctx(
+                c,
+                stylesheet,
+                link_here.clone(),
+                &next_ancestors,
+                &next_inherited_values,
+            )
+        })
         .collect();
 
-    StyledNode { node: root, specified_values, children, link_href: link_here }
+    StyledNode {
+        node: root,
+        specified_values,
+        children,
+        link_href: link_here,
+    }
 }
 
 // ---------------- selector matching ----------------
@@ -161,13 +240,16 @@ fn style_tree_with_ctx(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Specificity(u32, u32, u32); // (id, class, tag)
 
-fn specified_values_for(elem: &ElementData, stylesheet: &Stylesheet) -> HashMap<String, String> {
-    // いちばん強い宣言が最後に勝つように、(specificity, order) で適用
+fn specified_values_for(
+    elem: &ElementData,
+    stylesheet: &Stylesheet,
+    ancestors: &[Ancestor],
+) -> HashMap<String, String> {
     let mut matched: Vec<(Specificity, usize, &Rule)> = vec![];
 
     for (i, rule) in stylesheet.rules.iter().enumerate() {
-        if rule_matches(elem, rule) {
-            let spec = rule_specificity(elem, rule);
+        if rule_matches(elem, rule, ancestors) {
+            let spec = rule_specificity(elem, rule, ancestors);
             matched.push((spec, i, rule));
         }
     }
@@ -184,36 +266,66 @@ fn specified_values_for(elem: &ElementData, stylesheet: &Stylesheet) -> HashMap<
     values
 }
 
-fn rule_matches(elem: &ElementData, rule: &Rule) -> bool {
-    // 複数セレクタ: どれか当たればOK
+fn rule_matches(elem: &ElementData, rule: &Rule, ancestors: &[Ancestor]) -> bool {
     rule.selectors
         .iter()
-        .any(|sel| selector_matches(elem, &sel.simple))
+        .any(|sel| selector_matches_descendant(elem, ancestors, &sel.simple))
 }
 
-fn rule_specificity(elem: &ElementData, rule: &Rule) -> Specificity {
-    // 当たったセレクタの最大specificity
+fn rule_specificity(elem: &ElementData, rule: &Rule, ancestors: &[Ancestor]) -> Specificity {
     rule.selectors
         .iter()
-        .filter_map(|sel| selector_specificity_if_matches(elem, &sel.simple))
+        .filter_map(|sel| selector_specificity_if_matches(elem, ancestors, &sel.simple))
         .max()
         .unwrap_or(Specificity(0, 0, 0))
 }
 
-/// selector文字列を “最小で” 解釈して一致判定
-/// - "#id"
-/// - ".class"
-/// - "tag"
-/// - "tag.class"（簡易）
-/// それ以外は false
-fn selector_matches(elem: &ElementData, selector: &str) -> bool {
+fn selector_matches_descendant(elem: &ElementData, ancestors: &[Ancestor], selector: &str) -> bool {
     let s = selector.trim();
     if s.is_empty() {
         return false;
     }
 
-    // 複雑なセレクタ（空白、>、+、[attr]、:pseudo 等）は今は捨てる
-    if s.contains(' ') || s.contains('>') || s.contains('+') || s.contains('[') || s.contains(':') {
+    // まだ未対応
+    if s.contains('>') || s.contains('+') || s.contains('[') || s.contains(':') {
+        return false;
+    }
+
+    let parts: Vec<&str> = s.split_whitespace().filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() {
+        return false;
+    }
+
+    if !selector_matches_simple_elem(elem, parts[parts.len() - 1]) {
+        return false;
+    }
+
+    let mut upto = ancestors.len();
+    for part in parts[..parts.len() - 1].iter().rev() {
+        if let Some(pos) = find_ancestor_match(ancestors, upto, part) {
+            upto = pos;
+        } else {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn find_ancestor_match(ancestors: &[Ancestor], upto: usize, part: &str) -> Option<usize> {
+    let mut i = upto;
+    while i > 0 {
+        i -= 1;
+        if selector_matches_simple_ancestor(&ancestors[i], part) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn selector_matches_simple_elem(elem: &ElementData, selector: &str) -> bool {
+    let s = selector.trim();
+    if s.is_empty() {
         return false;
     }
 
@@ -239,23 +351,73 @@ fn selector_matches(elem: &ElementData, selector: &str) -> bool {
     elem.tag_name == s
 }
 
-fn selector_specificity_if_matches(elem: &ElementData, selector: &str) -> Option<Specificity> {
-    if !selector_matches(elem, selector) {
+fn selector_matches_simple_ancestor(a: &Ancestor, selector: &str) -> bool {
+    let s = selector.trim();
+    if s.is_empty() {
+        return false;
+    }
+
+    if let Some(id) = s.strip_prefix('#') {
+        return a.id.as_deref() == Some(id);
+    }
+
+    if let Some(class) = s.strip_prefix('.') {
+        return a.classes.iter().any(|c| c == class);
+    }
+
+    if let Some((tag, class)) = s.split_once('.') {
+        if a.tag != tag {
+            return false;
+        }
+        return a.classes.iter().any(|c| c == class);
+    }
+
+    a.tag == s
+}
+
+fn selector_specificity_if_matches(
+    elem: &ElementData,
+    ancestors: &[Ancestor],
+    selector: &str,
+) -> Option<Specificity> {
+    if !selector_matches_descendant(elem, ancestors, selector) {
         return None;
     }
 
-    let s = selector.trim();
+    let parts: Vec<&str> = selector.trim().split_whitespace().collect();
+
+    let mut id = 0u32;
+    let mut class = 0u32;
+    let mut tag = 0u32;
+
+    for p in parts {
+        let sp = specificity_of_simple(p);
+        id += sp.0;
+        class += sp.1;
+        tag += sp.2;
+    }
+
+    Some(Specificity(id, class, tag))
+}
+
+fn specificity_of_simple(s: &str) -> Specificity {
+    let s = s.trim();
+    if s.is_empty() {
+        return Specificity(0, 0, 0);
+    }
     if s.starts_with('#') {
-        return Some(Specificity(1, 0, 0));
+        return Specificity(1, 0, 0);
     }
     if s.starts_with('.') {
-        return Some(Specificity(0, 1, 0));
+        return Specificity(0, 1, 0);
     }
     if s.contains('.') {
-        return Some(Specificity(0, 1, 1)); // tag.class
+        return Specificity(0, 1, 1);
     }
-    Some(Specificity(0, 0, 1)) // tag
+    Specificity(0, 0, 1)
 }
+
+// ---------------- color ----------------
 
 fn parse_color(s: &str) -> Option<[f32; 4]> {
     let t = s.trim().to_lowercase();
