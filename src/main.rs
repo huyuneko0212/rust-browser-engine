@@ -219,13 +219,24 @@ fn hit_test_link(display_list: &[DisplayItem], x: f32, y: f32, scroll_y: f32) ->
     let doc_y = y + scroll_y;
 
     for item in display_list.iter().rev() {
-        if let DisplayItem::Text(t) = item {
-            if let Some(href) = &t.href {
-                let r = &t.hit;
-                if x >= r.x && x <= r.x + r.width && doc_y >= r.y && doc_y <= r.y + r.height {
-                    return Some(href.clone());
+        match item {
+            DisplayItem::Text(t) => {
+                if let Some(href) = &t.href {
+                    let r = &t.hit;
+                    if x >= r.x && x <= r.x + r.width && doc_y >= r.y && doc_y <= r.y + r.height {
+                        return Some(href.clone());
+                    }
                 }
             }
+            DisplayItem::Image(im) => {
+                if let Some(href) = &im.href {
+                    let r = &im.hit;
+                    if x >= r.x && x <= r.x + r.width && doc_y >= r.y && doc_y <= r.y + r.height {
+                        return Some(href.clone());
+                    }
+                }
+            }
+            _ => {}
         }
     }
     None
@@ -275,9 +286,7 @@ fn apply_hover(display_list: &mut [DisplayItem], hovered: Option<&str>) {
                     }
                 }
             }
-            DisplayItem::Image(r) => {
-                
-            }
+            DisplayItem::Image(r) => {}
         }
     }
 }
@@ -297,7 +306,9 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
 
     let dom_root = html::parse(response.body);
     println!("DOM生成完了");
-
+    println!("--- DOM start ---");
+    dump_dom(&dom_root, 0);
+    println!("--- DOM end ---");
     // UA + <style> + <link> + @import
     let mut css_text = String::from(UA_CSS);
     css_text.push('\n');
@@ -356,7 +367,7 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
     }
 
     println!("CSS total: {} bytes", css_text.len());
-    println!("--- UA_CSS start ---\n{}\n--- UA_CSS end ---", css_text);
+    // println!("--- UA_CSS start ---\n{}\n--- UA_CSS end ---", css_text);
 
     // style tree
     let stylesheet = css::Parser::new(css_text).parse_stylesheet();
@@ -381,6 +392,33 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
     println!("display items: {}", display_list.len());
 
     display_list
+}
+fn dump_dom(node: &crate::dom::Node, depth: usize) {
+    let indent = "  ".repeat(depth);
+
+    match &node.node_type {
+        crate::dom::NodeType::Text(t) => {
+            let s = t.trim();
+            if !s.is_empty() {
+                println!("{}Text({:?})", indent, s);
+            } else {
+                println!("{}Text(\" \")", indent);
+            }
+        }
+        crate::dom::NodeType::Element(e) => {
+            println!(
+                "{}Element <{} id={:?} class={:?}>",
+                indent,
+                e.tag_name,
+                e.id(),
+                e.classes()
+            );
+        }
+    }
+
+    for child in &node.children {
+        dump_dom(child, depth + 1);
+    }
 }
 
 struct BrowserState {

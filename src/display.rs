@@ -40,8 +40,10 @@ pub struct DrawImage {
     pub y: f32,
     pub w: f32,
     pub h: f32,
-    pub src: String,         // ★画像URL（相対なら解決済みを入れるのが理想）
-    pub key: String,         // ★キャッシュキー（同じ画像を再利用）
+    pub src: String, // ★画像URL（相対なら解決済みを入れるのが理想）
+    pub key: String, // ★キャッシュキー（同じ画像を再利用）
+    pub href: Option<String>,
+    pub hit: crate::layout::Rect,
 }
 
 const UNDERLINE_THICKNESS: f32 = 1.5;
@@ -218,31 +220,49 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font) {
             }
         }
     }
+
     // img を描画アイテムにする
     if let Some(sn) = node.get_style_node() {
         if let crate::dom::NodeType::Element(ed) = &sn.node.node_type {
             if ed.tag_name == "img" {
                 let c = &node.dimensions.content;
+
+                // ★追加：レイアウトに来てるか/サイズが付いてるか/リンク継承があるか
+                eprintln!(
+                    "[IMG] x={:.1} y={:.1} w={:.1} h={:.1} href={:?} src={:?}",
+                    c.x,
+                    c.y,
+                    c.width,
+                    c.height,
+                    sn.link_href.as_deref(),
+                    ed.attributes.get("src").map(|s| s.as_str())
+                );
+
                 if c.width > 0.0 && c.height > 0.0 {
                     if let Some(src) = ed.attributes.get("src") {
                         let src = src.trim();
                         if !src.is_empty() {
-                            // key は単純に src でOK（本当は resolve 後の絶対URL推奨）
                             let key = src.to_string();
                             out.push(DisplayItem::Image(DrawImage {
                                 x: c.x,
                                 y: c.y,
-                                w: c.width,
-                                h: c.height,
+                                w: 150.0,
+                                h: 150.0,
                                 src: src.to_string(),
                                 key,
+                                href: sn.link_href.clone(), // <a>配下なら入ってる想定
+                                hit: c.clone(),
                             }));
                         }
                     }
+                } else {
+                    // ★追加：表示できない原因が「サイズ0」かどうかの判定
+                    eprintln!("[IMG] skipped: zero-size (likely layout issue)");
                 }
             }
         }
     }
+
     for child in &node.children {
         walk(child, out, font);
     }
@@ -315,12 +335,7 @@ fn collect_descendant_text_bounds(node: &LayoutBox) -> Option<crate::layout::Rec
 
     let mut any = false;
     collect_descendant_text_bounds_rec(
-        node,
-        &mut min_x,
-        &mut min_y,
-        &mut max_x,
-        &mut max_y,
-        &mut any,
+        node, &mut min_x, &mut min_y, &mut max_x, &mut max_y, &mut any,
     );
 
     if !any {
