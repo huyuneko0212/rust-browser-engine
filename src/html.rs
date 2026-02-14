@@ -7,12 +7,100 @@ pub fn parse(source: String) -> Node {
     let mut parser = Parser::new(source);
     let nodes = parser.parse_nodes(None);
 
-    if nodes.len() == 1 {
-        nodes.into_iter().next().unwrap()
-    } else {
-        elem("html".to_string(), HashMap::new(), nodes)
+    normalize_document(nodes)
+}
+
+// =====================================================
+// html/head/body を補完して “実ブラウザっぽい” DOM にする
+// =====================================================
+
+fn is_head_like(n: &Node) -> bool {
+    match &n.node_type {
+        NodeType::Element(ed) => matches!(
+            ed.tag_name.as_str(),
+            "meta" | "title" | "style" | "link" | "base" | "script"
+        ),
+        _ => false,
     }
 }
+
+fn take_children(node: &mut Node) -> Vec<Node> {
+    std::mem::take(&mut node.children)
+}
+
+/// nodes(トップレベル) を html/head/body に正規化して返す
+fn normalize_document(mut nodes: Vec<Node>) -> Node {
+    // 1) まず top-level に html があるか探す（最初の1個だけ採用）
+    let mut html_node: Option<Node> = None;
+    let mut rest: Vec<Node> = vec![];
+
+    for n in nodes.drain(..) {
+        match &n.node_type {
+            NodeType::Element(ed) if ed.tag_name == "html" && html_node.is_none() => {
+                html_node = Some(n);
+            }
+            _ => rest.push(n),
+        }
+    }
+
+    // 2) html が無いなら html を作って、rest を html 配下に入れる（後で head/body に振り分け）
+    let mut html = if let Some(h) = html_node {
+        h
+    } else {
+        elem("html".to_string(), HashMap::new(), rest)
+    };
+
+    // 3) html の子から head/body を拾う（最初の1個ずつ）
+    let mut head_node: Option<Node> = None;
+    let mut body_node: Option<Node> = None;
+    let mut others: Vec<Node> = vec![];
+
+    let html_children = take_children(&mut html);
+
+    for n in html_children {
+        match &n.node_type {
+            NodeType::Element(ed) if ed.tag_name == "head" && head_node.is_none() => {
+                head_node = Some(n);
+            }
+            NodeType::Element(ed) if ed.tag_name == "body" && body_node.is_none() => {
+                body_node = Some(n);
+            }
+            _ => others.push(n),
+        }
+    }
+
+    // 4) head/body が無い場合に備えて children を集める
+    let mut head_children: Vec<Node> = head_node
+        .as_mut()
+        .map(|h| take_children(h))
+        .unwrap_or_default();
+
+    let mut body_children: Vec<Node> = body_node
+        .as_mut()
+        .map(|b| take_children(b))
+        .unwrap_or_default();
+
+    // 5) html直下に残ってた nodes を head/body に振り分け
+    for n in others {
+        if is_head_like(&n) {
+            head_children.push(n);
+        } else {
+            body_children.push(n);
+        }
+    }
+
+    // 6) head/body を必ず作る
+    let head = elem("head".to_string(), HashMap::new(), head_children);
+    let body = elem("body".to_string(), HashMap::new(), body_children);
+
+    // 7) html に入れ直す（順番は head → body 固定）
+    html.children = vec![head, body];
+    html
+}
+
+// =====================================================
+// ↓ 以降はあなたの Parser 実装そのまま
+// =====================================================
 
 pub struct Parser {
     pos: usize,
@@ -71,13 +159,13 @@ impl Parser {
         self.consume_while(|c| c.is_whitespace());
     }
 
-    // ★ tag_name は常に小文字で返す
+    // tag_name は常に小文字で返す
     fn parse_tag_name(&mut self) -> String {
         self.consume_while(|c| c.is_alphanumeric())
             .to_ascii_lowercase()
     }
 
-    // ★ peek も小文字で返す
+    // peek も小文字で返す
     fn peek_start_tag_name(&self) -> Option<String> {
         let s = &self.input[self.pos..];
         if !s.starts_with('<') {
@@ -106,7 +194,7 @@ impl Parser {
         }
     }
 
-    // ★ peek も小文字で返す
+    // peek も小文字で返す
     fn peek_end_tag_name(&self) -> Option<String> {
         let s = &self.input[self.pos..];
         if !s.starts_with("</") {
@@ -154,7 +242,7 @@ impl Parser {
     }
 
     fn consume_raw_text_until_end_tag(&mut self, tag_lc: &str) -> String {
-        // ★ tag は小文字前提で end を作る
+        // tag は小文字前提で end を作る
         let end = format!("</{}>", tag_lc);
         let mut out = String::new();
 
@@ -198,7 +286,7 @@ impl Parser {
                 continue;
             }
 
-            // ★ 属性名は小文字化（class / id / href 等が安定する）
+            // 属性名は小文字化（class / id / href 等が安定する）
             let key = key_raw.to_ascii_lowercase();
 
             self.consume_whitespace();
@@ -242,7 +330,7 @@ impl Parser {
     fn parse_element(&mut self) -> Node {
         assert!(self.consume_char() == '<');
 
-        // ★ ここで小文字化済み
+        // ここで小文字化済み
         let tag_name = self.parse_tag_name();
 
         // attributes
@@ -261,7 +349,7 @@ impl Parser {
             self.consume_char();
         }
 
-        // Voidタグ（閉じタグなし）: ★小文字前提
+        // Voidタグ（閉じタグなし）: 小文字前提
         let void_tags = [
             "meta", "img", "br", "hr", "input", "link", "area", "base", "col", "embed", "param",
             "source", "track", "wbr",
@@ -282,7 +370,7 @@ impl Parser {
         if self.starts_with("</") {
             self.consume_char(); // <
             self.consume_char(); // /
-            let end_tag = self.parse_tag_name(); // ★小文字化される
+            let end_tag = self.parse_tag_name(); // 小文字化される
 
             self.consume_while(|c| c != '>');
             if !self.eof() {
@@ -330,7 +418,7 @@ impl Parser {
             // <p> の中でブロック要素が来たら </p> 省略とみなす
             if parent_tag == Some("p") && self.next_char() == '<' {
                 if let Some(next_tag) = self.peek_start_tag_name() {
-                    // ★ next_tag は小文字
+                    // next_tag は小文字
                     if is_block_tag(&next_tag) {
                         break;
                     }
@@ -345,7 +433,7 @@ impl Parser {
 }
 
 fn is_block_tag(tag_lc: &str) -> bool {
-    // ★小文字前提
+    // 小文字前提
     matches!(
         tag_lc,
         "html" | "body" | "div" | "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol"
