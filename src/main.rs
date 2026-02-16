@@ -9,6 +9,7 @@ mod url;
 mod display;
 mod gpu;
 mod render;
+mod image;
 
 use std::collections::HashSet;
 use std::env;
@@ -196,7 +197,7 @@ fn expand_css_imports(
             let resp = http::request(&import_url);
             if (200..300).contains(&resp.status_code) && is_css_content_type(&resp.content_type) {
                 out.push_str("\n/* ---- @import expanded ---- */\n");
-                let expanded = expand_css_imports(&import_url, &resp.body, visited, depth + 1);
+                let expanded = expand_css_imports(&import_url, &resp.body_text_lossy(), visited, depth + 1);
                 out.push_str(&expanded);
                 out.push('\n');
             }
@@ -304,11 +305,11 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
     let response = http::request(url);
     println!("HTML status: {}", response.status_code);
 
-    let dom_root = html::parse(response.body);
+    let dom_root = html::parse(response.body_text_lossy());
     println!("DOM生成完了");
-    println!("--- DOM start ---");
-    dump_dom(&dom_root, 0);
-    println!("--- DOM end ---");
+    // println!("--- DOM start ---");
+    // dump_dom(&dom_root, 0);
+    // println!("--- DOM end ---");
     // UA + <style> + <link> + @import
     let mut css_text = String::from(UA_CSS);
     css_text.push('\n');
@@ -353,7 +354,7 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
         );
         visited.insert(base_key);
 
-        let expanded = expand_css_imports(&css_url, &resp.body, &mut visited, 0);
+        let expanded = expand_css_imports(&css_url, &resp.body_text_lossy(), &mut visited, 0);
         css_text.push_str(&expanded);
         css_text.push('\n');
     }

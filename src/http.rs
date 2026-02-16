@@ -13,8 +13,15 @@ use crate::url::URL;
 pub struct Response {
     pub status_code: u16,
     pub headers: HashMap<String, String>,
-    pub body: String,
+    pub body: Vec<u8>, // ★ bytes に変更
     pub content_type: Option<String>,
+}
+
+impl Response {
+    /// HTML/CSS 用（バイナリは壊れるので画像には使わない）
+    pub fn body_text_lossy(&self) -> String {
+        String::from_utf8_lossy(&self.body).to_string()
+    }
 }
 
 pub fn request(url: &URL) -> Response {
@@ -27,7 +34,7 @@ fn request_inner(url: &URL, depth: usize) -> Response {
     }
 
     // -------------------------
-    // file:// 対応（ローカルから読む）
+    // file://
     // -------------------------
     if url.scheme == "file" {
         return request_file(url);
@@ -39,12 +46,11 @@ fn request_inner(url: &URL, depth: usize) -> Response {
     let addr = format!("{}:{}", url.host, url.port);
     let stream = TcpStream::connect(addr).unwrap();
 
-    // HTMLもCSSも取りたいので Accept は広めに
     let req = format!(
         "GET {} HTTP/1.1\r\n\
 Host: {}\r\n\
 User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) rust-browser/0.1\r\n\
-Accept: text/html,application/xhtml+xml,text/css,*/*;q=0.8\r\n\
+Accept: text/html,application/xhtml+xml,text/css,image/*,*/*;q=0.8\r\n\
 Accept-Language: ja,en-US;q=0.9,en;q=0.8\r\n\
 Accept-Encoding: gzip, br\r\n\
 Connection: close\r\n\
@@ -73,7 +79,7 @@ Connection: close\r\n\
 }
 
 fn request_file(url: &URL) -> Response {
-    // url.path は "D:/.../a.html" or "/home/.../a.html" 想定
+    // url.path は "D:/.../a.html" 等
     let mut fs_path = url.path.clone();
 
     // 念のためバックスラッシュ許容
@@ -92,19 +98,19 @@ fn request_file(url: &URL) -> Response {
                 body: format!(
                     "<html><body><h1>File not found</h1><p>{}</p><p>{}</p></body></html>",
                     fs_path_os, e
-                ),
+                )
+                .into_bytes(),
                 content_type: Some("text/html; charset=utf-8".to_string()),
             };
         }
     };
 
-    // 拡張子から content-type 推定（最小）
     let content_type = guess_content_type_from_path(&fs_path);
 
     Response {
         status_code: 200,
         headers: HashMap::new(),
-        body: String::from_utf8_lossy(&bytes).to_string(),
+        body: bytes,
         content_type,
     }
 }
@@ -117,8 +123,15 @@ fn guess_content_type_from_path(path: &str) -> Option<String> {
         Some("text/css; charset=utf-8".to_string())
     } else if p.ends_with(".txt") {
         Some("text/plain; charset=utf-8".to_string())
+    } else if p.ends_with(".png") {
+        Some("image/png".to_string())
+    } else if p.ends_with(".jpg") || p.ends_with(".jpeg") {
+        Some("image/jpeg".to_string())
+    } else if p.ends_with(".gif") {
+        Some("image/gif".to_string())
+    } else if p.ends_with(".webp") {
+        Some("image/webp".to_string())
     } else {
-        // 画像はまだ実装しないので application/octet-stream 扱いにしてもOK
         Some("application/octet-stream".to_string())
     }
 }
@@ -132,7 +145,7 @@ fn parse_response(url: &URL, resp: Vec<u8>, depth: usize) -> Response {
             return Response {
                 status_code: 0,
                 headers: HashMap::new(),
-                body: String::from_utf8_lossy(&resp).to_string(),
+                body: resp,
                 content_type: None,
             };
         }
@@ -159,7 +172,7 @@ fn parse_response(url: &URL, resp: Vec<u8>, depth: usize) -> Response {
 
     let content_type = headers.get("content-type").cloned();
 
-    // redirect（★相対解決）
+    // redirect
     if matches!(status_code, 301 | 302 | 303 | 307 | 308) {
         if let Some(loc) = headers.get("location").cloned() {
             let new_url = url.resolve_location(&loc);
@@ -172,7 +185,7 @@ fn parse_response(url: &URL, resp: Vec<u8>, depth: usize) -> Response {
         return Response {
             status_code,
             headers,
-            body: String::new(),
+            body: Vec::new(),
             content_type,
         };
     }
@@ -185,7 +198,7 @@ fn parse_response(url: &URL, resp: Vec<u8>, depth: usize) -> Response {
         }
     }
 
-    // 2) Content-Encoding: gzip / br（複数指定なら逆順でほどく）
+    // 2) gzip / br
     if let Some(enc) = headers.get("content-encoding") {
         let encs: Vec<String> = enc
             .split(',')
@@ -204,8 +217,7 @@ fn parse_response(url: &URL, resp: Vec<u8>, depth: usize) -> Response {
                         return Response {
                             status_code,
                             headers,
-                            body: "<html><body><p>gzip decode failed</p></body></html>"
-                                .to_string(),
+                            body: b"gzip decode failed".to_vec(),
                             content_type,
                         };
                     }
@@ -219,7 +231,7 @@ fn parse_response(url: &URL, resp: Vec<u8>, depth: usize) -> Response {
                         return Response {
                             status_code,
                             headers,
-                            body: "<html><body><p>brotli decode failed</p></body></html>".to_string(),
+                            body: b"brotli decode failed".to_vec(),
                             content_type,
                         };
                     }
@@ -228,10 +240,7 @@ fn parse_response(url: &URL, resp: Vec<u8>, depth: usize) -> Response {
                     return Response {
                         status_code,
                         headers,
-                        body: format!(
-                            "<html><body><p>content-encoding {} not supported yet</p></body></html>",
-                            other
-                        ),
+                        body: format!("content-encoding {} not supported yet", other).into_bytes(),
                         content_type,
                     };
                 }
@@ -239,13 +248,11 @@ fn parse_response(url: &URL, resp: Vec<u8>, depth: usize) -> Response {
         }
     }
 
-    // 3) 文字コード（今はUTF-8扱いでOK）
-    let body = String::from_utf8_lossy(&decoded_body).to_string();
-
+    // UTF-8化しない、bytesのまま返す
     Response {
         status_code,
         headers,
-        body,
+        body: decoded_body,
         content_type,
     }
 }

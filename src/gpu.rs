@@ -4,7 +4,8 @@ use std::fs;
 use wgpu::*;
 use winit::window::Window;
 
-use crate::display::{DisplayItem, DrawRect, DrawText, DrawImage};
+use crate::display::{DisplayItem, DrawImage, DrawRect, DrawText};
+use crate::image as image_loader;
 use image::GenericImageView;
 
 #[repr(C)]
@@ -557,7 +558,9 @@ impl<'a> GPU<'a> {
             }
         };
 
-        let view = output.texture.create_view(&TextureViewDescriptor::default());
+        let view = output
+            .texture
+            .create_view(&TextureViewDescriptor::default());
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor {
@@ -603,6 +606,8 @@ impl<'a> GPU<'a> {
                         pass.set_bind_group(0, &cached.bind_group, &[]);
                         let start = (i * 6) as u32;
                         pass.draw(start..(start + 6), 0..1);
+                    } else {
+                        eprintln!("[img] cache miss key={} src={}", im.key, im.src);
                     }
                 }
             }
@@ -694,13 +699,31 @@ impl<'a> GPU<'a> {
 
             let c = r.color;
 
-            out.push(RectVertex { pos: [x1, y1], color: c });
-            out.push(RectVertex { pos: [x2, y1], color: c });
-            out.push(RectVertex { pos: [x2, y2], color: c });
+            out.push(RectVertex {
+                pos: [x1, y1],
+                color: c,
+            });
+            out.push(RectVertex {
+                pos: [x2, y1],
+                color: c,
+            });
+            out.push(RectVertex {
+                pos: [x2, y2],
+                color: c,
+            });
 
-            out.push(RectVertex { pos: [x1, y1], color: c });
-            out.push(RectVertex { pos: [x2, y2], color: c });
-            out.push(RectVertex { pos: [x1, y2], color: c });
+            out.push(RectVertex {
+                pos: [x1, y1],
+                color: c,
+            });
+            out.push(RectVertex {
+                pos: [x2, y2],
+                color: c,
+            });
+            out.push(RectVertex {
+                pos: [x1, y2],
+                color: c,
+            });
         }
 
         out
@@ -718,8 +741,12 @@ impl<'a> GPU<'a> {
             }
 
             let ry = im.y - scroll_y;
-            if ry > h || (ry + im.h) < 0.0 { continue; }
-            if im.x > w || (im.x + im.w) < 0.0 { continue; }
+            if ry > h || (ry + im.h) < 0.0 {
+                continue;
+            }
+            if im.x > w || (im.x + im.w) < 0.0 {
+                continue;
+            }
 
             let x1 = (im.x / w) * 2.0 - 1.0;
             let y1 = 1.0 - (ry / h) * 2.0;
@@ -731,13 +758,31 @@ impl<'a> GPU<'a> {
             let u1 = 1.0;
             let v1 = 1.0;
 
-            out.push(ImageVertex { pos: [x1, y1], uv: [u0, v0] });
-            out.push(ImageVertex { pos: [x2, y1], uv: [u1, v0] });
-            out.push(ImageVertex { pos: [x2, y2], uv: [u1, v1] });
+            out.push(ImageVertex {
+                pos: [x1, y1],
+                uv: [u0, v0],
+            });
+            out.push(ImageVertex {
+                pos: [x2, y1],
+                uv: [u1, v0],
+            });
+            out.push(ImageVertex {
+                pos: [x2, y2],
+                uv: [u1, v1],
+            });
 
-            out.push(ImageVertex { pos: [x1, y1], uv: [u0, v0] });
-            out.push(ImageVertex { pos: [x2, y2], uv: [u1, v1] });
-            out.push(ImageVertex { pos: [x1, y2], uv: [u0, v1] });
+            out.push(ImageVertex {
+                pos: [x1, y1],
+                uv: [u0, v0],
+            });
+            out.push(ImageVertex {
+                pos: [x2, y2],
+                uv: [u1, v1],
+            });
+            out.push(ImageVertex {
+                pos: [x1, y2],
+                uv: [u0, v1],
+            });
         }
 
         out
@@ -789,13 +834,37 @@ impl<'a> GPU<'a> {
                 let v1 = ge.v1;
                 let c = t.color;
 
-                out.push(TextVertex { pos: [x1, y1], uv: [u0, v0], color: c });
-                out.push(TextVertex { pos: [x2, y1], uv: [u1, v0], color: c });
-                out.push(TextVertex { pos: [x2, y2], uv: [u1, v1], color: c });
+                out.push(TextVertex {
+                    pos: [x1, y1],
+                    uv: [u0, v0],
+                    color: c,
+                });
+                out.push(TextVertex {
+                    pos: [x2, y1],
+                    uv: [u1, v0],
+                    color: c,
+                });
+                out.push(TextVertex {
+                    pos: [x2, y2],
+                    uv: [u1, v1],
+                    color: c,
+                });
 
-                out.push(TextVertex { pos: [x1, y1], uv: [u0, v0], color: c });
-                out.push(TextVertex { pos: [x2, y2], uv: [u1, v1], color: c });
-                out.push(TextVertex { pos: [x1, y2], uv: [u0, v1], color: c });
+                out.push(TextVertex {
+                    pos: [x1, y1],
+                    uv: [u0, v0],
+                    color: c,
+                });
+                out.push(TextVertex {
+                    pos: [x2, y2],
+                    uv: [u1, v1],
+                    color: c,
+                });
+                out.push(TextVertex {
+                    pos: [x1, y2],
+                    uv: [u0, v1],
+                    color: c,
+                });
 
                 pen_x += ge.advance;
             }
@@ -880,11 +949,16 @@ impl<'a> GPU<'a> {
             return self.image_cache.get(key);
         }
 
-        // まずはローカル画像（src=ファイルパス）だけ対応
-        let bytes = fs::read(src).ok()?;
+        // ★ file:// / http(s):// 両対応（image.rs に寄せる）
+        let bytes = image_loader::load_image_bytes(src)?;
         let img = image::load_from_memory(&bytes).ok()?;
         let rgba = img.to_rgba8();
         let (iw, ih) = img.dimensions();
+
+        if iw == 0 || ih == 0 {
+            eprintln!("[img] decoded but zero-size: key={} src={}", key, src);
+            return None;
+        }
 
         let tex = self.device.create_texture(&TextureDescriptor {
             label: Some("img tex"),
@@ -946,7 +1020,6 @@ impl<'a> GPU<'a> {
                 _tex: tex,
             },
         );
-
         self.image_cache.get(key)
     }
 }
