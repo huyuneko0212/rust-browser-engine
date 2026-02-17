@@ -1,5 +1,7 @@
 use std::fs;
 
+use image::GenericImageView;
+
 const MAX_REDIRECTS: usize = 5;
 
 pub fn load_image_bytes(src: &str) -> Option<Vec<u8>> {
@@ -181,4 +183,27 @@ fn trim_prefix_ignore_ascii_case<'a>(s: &'a str, prefix: &str) -> &'a str {
     } else {
         s
     }
+}
+
+pub fn load_image_natural_size_px(src: &str) -> Option<(u32, u32)> {
+    let bytes = match load_image_bytes(src) {
+        Some(b) => b,
+        None => {
+            eprintln!("[img] load_image_bytes failed src={}", src);
+            return None;
+        }
+    };
+
+    let img = match image::load_from_memory(&bytes) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("[img] decode failed src={} err={}", src, e);
+            return None;
+        }
+    };
+
+    let (w, h) = img.dimensions();
+    eprintln!("[img] decoded src={} -> {}x{}", src, w, h);
+
+    if w == 0 || h == 0 { None } else { Some((w, h)) }
 }

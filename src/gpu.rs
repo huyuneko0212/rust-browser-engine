@@ -5,7 +5,7 @@ use wgpu::*;
 use winit::window::Window;
 
 use crate::display::{DisplayItem, DrawImage, DrawRect, DrawText};
-use crate::image as image_loader;
+use crate::image_loader;
 use image::GenericImageView;
 
 #[repr(C)]

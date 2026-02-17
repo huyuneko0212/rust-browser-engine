@@ -246,8 +246,8 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font) {
                             out.push(DisplayItem::Image(DrawImage {
                                 x: c.x,
                                 y: c.y,
-                                w: 150.0,
-                                h: 150.0,
+                                w: c.width,
+                                h: c.height,
                                 src: src.to_string(),
                                 key,
                                 href: sn.link_href.clone(), // <a>配下なら入ってる想定

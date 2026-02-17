@@ -1,6 +1,15 @@
 use crate::style::{Display, StyledNode};
 use fontdue::Font;
 
+pub trait ImageSizeProvider {
+    /// layout が持っている src（相対/絶対/ポート付きなど）を
+    /// “キャッシュキーと同じ正規化済み絶対URL文字列” に変換する
+    fn normalize_src_key(&self, src: &str) -> Option<String>;
+
+    /// key(正規化済み絶対URL文字列) から自然サイズ(px)を返す
+    fn natural_size_px(&self, key: &str) -> Option<(u32, u32)>;
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct Rect {
     pub x: f32,
@@ -67,43 +76,58 @@ impl LayoutBox {
         }
     }
 
-    pub fn layout_with_font(&mut self, containing_block: Dimensions, font: &Font) {
+    pub fn layout_with_font(
+        &mut self,
+        containing_block: Dimensions,
+        font: &Font,
+        img_cache: &dyn ImageSizeProvider,
+    ) {
         match self.box_type {
-            BoxType::BlockNode(_) => self.layout_block_with_font(containing_block, font),
+            BoxType::BlockNode(_) => self.layout_block_with_font(containing_block, font, img_cache),
             BoxType::InlineNode(_) => {
-                // InlineNode は IFC の中で配置される想定。
-                // ここに来るのは “トップがinline” など特殊ケースだけ。
-                self.layout_inline_leaf_fallback(containing_block, font);
+                self.layout_inline_leaf_fallback(containing_block, font, img_cache)
             }
-            BoxType::Anonymous => self.layout_anonymous_block_with_font(containing_block, font),
+            BoxType::Anonymous => {
+                self.layout_anonymous_block_with_font(containing_block, font, img_cache)
+            }
         }
     }
 
-    fn layout_block_with_font(&mut self, containing_block: Dimensions, font: &Font) {
+    fn layout_block_with_font(
+        &mut self,
+        containing_block: Dimensions,
+        font: &Font,
+        img_cache: &dyn ImageSizeProvider,
+    ) {
         self.calculate_block_model(containing_block.clone());
         self.calculate_block_width(containing_block.clone());
         self.calculate_block_position(containing_block.clone());
 
-        // children の layout
-        self.layout_block_children_with_font(font);
+        self.layout_block_children_with_font(font, img_cache);
 
-        // height
-        self.calculate_block_height_with_font(font);
+        self.calculate_block_height_with_font(font, img_cache);
     }
 
-    fn layout_anonymous_block_with_font(&mut self, containing_block: Dimensions, font: &Font) {
-        // Anonymous は margin/padding/border を 0 とみなして、与えられた containing をそのまま content に使う
+    fn layout_anonymous_block_with_font(
+        &mut self,
+        containing_block: Dimensions,
+        font: &Font,
+        img_cache: &dyn ImageSizeProvider,
+    ) {
         self.dimensions.content.x = containing_block.content.x;
         self.dimensions.content.y = containing_block.content.y;
         self.dimensions.content.width = containing_block.content.width;
         self.dimensions.content.height = 0.0;
 
-        // ★IFC: inline を行に詰めて子(InlineNode/Text/img)の位置と自分の高さを決める
-        self.layout_inline_formatting_context(font);
+        self.layout_inline_formatting_context(font, img_cache);
     }
 
-    fn layout_inline_leaf_fallback(&mut self, containing_block: Dimensions, font: &Font) {
-        // “トップがText/img” などの救済（通常は anonymous IFC 内で配置される）
+    fn layout_inline_leaf_fallback(
+        &mut self,
+        containing_block: Dimensions,
+        font: &Font,
+        img_cache: &dyn ImageSizeProvider,
+    ) {
         let (font_size, line_h, text_opt, img_opt) = if let Some(sn) = self.get_style_node() {
             let fs = font_size_px(sn).unwrap_or(16.0);
             let lh = line_height_px(sn, fs);
@@ -114,12 +138,16 @@ impl LayoutBox {
                     (
                         fs,
                         lh,
-                        if s.is_empty() { None } else { Some(s.to_string()) },
+                        if s.is_empty() {
+                            None
+                        } else {
+                            Some(s.to_string())
+                        },
                         None,
                     )
                 }
                 crate::dom::NodeType::Element(ed) if ed.tag_name == "img" => {
-                    let (w, h) = img_intrinsic_size_px(sn);
+                    let (w, h) = img_intrinsic_size_px(sn, img_cache);
                     (fs, lh, None, Some((w, h)))
                 }
                 _ => (fs, lh, None, None),
@@ -352,7 +380,7 @@ impl LayoutBox {
         d.content.y = containing_block.content.y + d.margin.top + d.border.top + d.padding.top;
     }
 
-    fn layout_block_children_with_font(&mut self, font: &Font) {
+    fn layout_block_children_with_font(&mut self, font: &Font, img_cache: &dyn ImageSizeProvider) {
         let mut y = self.dimensions.content.y;
 
         for child in &mut self.children {
@@ -362,7 +390,7 @@ impl LayoutBox {
             cb.content.width = self.dimensions.content.width;
             cb.content.height = self.dimensions.content.height.max(1.0);
 
-            child.layout_with_font(cb, font);
+            child.layout_with_font(cb, font, img_cache);
 
             y += child.dimensions.margin_box_height().max(0.0);
         }
@@ -370,8 +398,7 @@ impl LayoutBox {
         self.dimensions.content.height = (y - self.dimensions.content.y).max(0.0);
     }
 
-    fn calculate_block_height_with_font(&mut self, font: &Font) {
-        // height指定があれば優先
+    fn calculate_block_height_with_font(&mut self, font: &Font, img_cache: &dyn ImageSizeProvider) {
         let (h_str, viewport_w, viewport_h, parent_w) = {
             let vw = self.dimensions.content.width.max(1.0);
             (
@@ -391,11 +418,17 @@ impl LayoutBox {
             }
         }
 
-        // childrenで決まる（layout_block_children_with_font が計算済み）
-        // ただし葉ブロックで children が無い/0 のとき、テキスト高さを補う
         let has_any_child = !self.children.is_empty();
         if !has_any_child {
             if let Some(sn) = self.get_style_node() {
+                if let crate::dom::NodeType::Element(ed) = &sn.node.node_type {
+                    if ed.tag_name == "img" {
+                        let (_iw, ih) = img_intrinsic_size_px(sn, img_cache);
+                        self.dimensions.content.height = ih.max(1.0);
+                        return;
+                    }
+                }
+
                 let mut buf = String::new();
                 collect_text_nodes(sn, &mut buf);
 
@@ -414,7 +447,7 @@ impl LayoutBox {
     }
 
     /// ★IFC: anonymous block の中の inline subtree を “行に詰める”
-    fn layout_inline_formatting_context(&mut self, font: &Font) {
+    fn layout_inline_formatting_context(&mut self, font: &Font, img_cache: &dyn ImageSizeProvider) {
         let start_x = self.dimensions.content.x;
         let start_y = self.dimensions.content.y;
         let max_w = self.dimensions.content.width.max(1.0);
@@ -426,6 +459,7 @@ impl LayoutBox {
         fn walk_inline(
             node: &mut LayoutBox,
             font: &Font,
+            img_cache: &dyn ImageSizeProvider,
             start_x: f32,
             max_w: f32,
             cursor_x: &mut f32,
@@ -434,7 +468,6 @@ impl LayoutBox {
         ) {
             match &mut node.box_type {
                 BoxType::InlineNode(_) => {
-                    // Text葉なら配置。Element inline は子へ降りる
                     let (is_text, text, font_size, line_h, img_opt) =
                         if let Some(sn) = node.get_style_node() {
                             let fs = font_size_px(sn).unwrap_or(16.0);
@@ -442,10 +475,7 @@ impl LayoutBox {
 
                             match &sn.node.node_type {
                                 crate::dom::NodeType::Text(t) => {
-                                    // ★空白を1個に畳む（HTMLの基本）
                                     let collapsed = collapse_whitespace(t);
-
-                                    // 目に見える文字が無ければ「空白1個」扱い（幅は取る）
                                     if collapsed.trim().is_empty() {
                                         (true, Some(" ".to_string()), fs, lh, None)
                                     } else {
@@ -453,7 +483,7 @@ impl LayoutBox {
                                     }
                                 }
                                 crate::dom::NodeType::Element(ed) if ed.tag_name == "img" => {
-                                    let (w, h) = img_intrinsic_size_px(sn);
+                                    let (w, h) = img_intrinsic_size_px(sn, img_cache);
                                     (false, None, fs, lh, Some((w, h)))
                                 }
                                 _ => (false, None, fs, lh, None),
@@ -462,12 +492,10 @@ impl LayoutBox {
                             (false, None, 16.0, 16.0 * 1.2, None)
                         };
 
-                    // ★img leaf（置換要素）を inline 1要素として配置
                     if let Some((iw, ih)) = img_opt {
                         let iw = iw.max(1.0);
                         let ih = ih.max(1.0);
 
-                        // 折り返し
                         if *cursor_x > start_x && *cursor_x + iw > start_x + max_w {
                             *cursor_x = start_x;
                             *cursor_y += (*current_line_h).max(ih);
@@ -488,7 +516,6 @@ impl LayoutBox {
                         if let Some(txt) = text {
                             let is_space_only = txt == " ";
 
-                            // ★行頭のスペースは捨てる（ブラウザっぽい）
                             if is_space_only && (*cursor_x == start_x) {
                                 node.dimensions.content.x = *cursor_x;
                                 node.dimensions.content.y = *cursor_y;
@@ -497,11 +524,9 @@ impl LayoutBox {
                                 return;
                             }
 
-                            // 幅を測る（スペースも advance を取る）
                             let w = measure_width_fontdue(font, &txt, font_size);
                             let h = line_h;
 
-                            // 折り返し：次の行に送る（ただし空白だけなら折返しのトリガにしない）
                             if !is_space_only
                                 && *cursor_x > start_x
                                 && *cursor_x + w > start_x + max_w
@@ -509,18 +534,8 @@ impl LayoutBox {
                                 *cursor_x = start_x;
                                 *cursor_y += (*current_line_h).max(h);
                                 *current_line_h = 0.0;
-
-                                // ★折り返し直後の空白は捨てる
-                                if is_space_only {
-                                    node.dimensions.content.x = *cursor_x;
-                                    node.dimensions.content.y = *cursor_y;
-                                    node.dimensions.content.width = 0.0;
-                                    node.dimensions.content.height = 0.0;
-                                    return;
-                                }
                             }
 
-                            // ★空白は「幅だけ進める」：box自体は0（displayで描かない前提）
                             if is_space_only {
                                 node.dimensions.content.x = *cursor_x;
                                 node.dimensions.content.y = *cursor_y;
@@ -532,7 +547,6 @@ impl LayoutBox {
                                 return;
                             }
 
-                            // 通常テキスト
                             node.dimensions.content.x = *cursor_x;
                             node.dimensions.content.y = *cursor_y;
                             node.dimensions.content.width = w.max(0.0);
@@ -541,18 +555,17 @@ impl LayoutBox {
                             *cursor_x += w;
                             *current_line_h = (*current_line_h).max(h);
                         } else {
-                            // 空テキストはサイズ0
                             node.dimensions.content.width = 0.0;
                             node.dimensions.content.height = 0.0;
                             node.dimensions.content.x = *cursor_x;
                             node.dimensions.content.y = *cursor_y;
                         }
                     } else {
-                        // inline element は子を流し込む（箱は作らない）
                         for ch in &mut node.children {
                             walk_inline(
                                 ch,
                                 font,
+                                img_cache,
                                 start_x,
                                 max_w,
                                 cursor_x,
@@ -560,7 +573,6 @@ impl LayoutBox {
                                 current_line_h,
                             );
                         }
-                        // 自分自身の箱は使わない
                         node.dimensions.content.width = 0.0;
                         node.dimensions.content.height = 0.0;
                         node.dimensions.content.x = *cursor_x;
@@ -568,7 +580,6 @@ impl LayoutBox {
                     }
                 }
                 BoxType::BlockNode(_) | BoxType::Anonymous => {
-                    // block は次の行から始める
                     if *cursor_x > start_x {
                         *cursor_x = start_x;
                         *cursor_y += (*current_line_h).max(18.0);
@@ -579,7 +590,8 @@ impl LayoutBox {
                     cb.content.y = *cursor_y;
                     cb.content.width = max_w;
                     cb.content.height = 1.0;
-                    node.layout_with_font(cb, font);
+
+                    node.layout_with_font(cb, font, img_cache);
                     *cursor_y += node.dimensions.margin_box_height().max(0.0);
                 }
             }
@@ -589,6 +601,7 @@ impl LayoutBox {
             walk_inline(
                 child,
                 font,
+                img_cache,
                 start_x,
                 max_w,
                 &mut cursor_x,
@@ -597,7 +610,6 @@ impl LayoutBox {
             );
         }
 
-        // 最終行の高さを加算
         let total_h = (cursor_y - start_y) + current_line_h.max(0.0);
         self.dimensions.content.height = total_h.max(0.0);
     }
@@ -746,11 +758,14 @@ fn parse_px(s: &str) -> Option<f32> {
 /// 1) CSS width/height (px)
 /// 2) HTML attributes width/height (数値)
 /// 3) fallback 300x150
-fn img_intrinsic_size_px(sn: &crate::style::StyledNode) -> (f32, f32) {
+fn img_intrinsic_size_px(
+    sn: &crate::style::StyledNode,
+    img_cache: &dyn ImageSizeProvider,
+) -> (f32, f32) {
     let css_w = sn.value("width").and_then(|v| parse_px(v));
     let css_h = sn.value("height").and_then(|v| parse_px(v));
 
-    let (attr_w, attr_h) = if let crate::dom::NodeType::Element(ed) = &sn.node.node_type {
+    let (attr_w, attr_h, src_opt) = if let crate::dom::NodeType::Element(ed) = &sn.node.node_type {
         let w = ed
             .attributes
             .get("width")
@@ -759,14 +774,52 @@ fn img_intrinsic_size_px(sn: &crate::style::StyledNode) -> (f32, f32) {
             .attributes
             .get("height")
             .and_then(|s| s.trim().parse::<f32>().ok());
-        (w, h)
+        let src = ed.attributes.get("src").cloned();
+        (w, h, src)
     } else {
-        (None, None)
+        (None, None, None)
     };
 
-    let w = css_w.or(attr_w).unwrap_or(300.0);
-    let h = css_h.or(attr_h).unwrap_or(150.0);
-    (w, h)
+    // -------------------------
+    // ★ここがキモ：src を正規化してから cache を引く
+    // -------------------------
+    let natural = src_opt
+        .as_deref()
+        .and_then(|src| img_cache.normalize_src_key(src))
+        .and_then(|key| img_cache.natural_size_px(&key));
+
+    // まずは明示指定（CSS/attr）
+    if let (Some(w), Some(h)) = (css_w.or(attr_w), css_h.or(attr_h)) {
+        return (w.max(1.0), h.max(1.0));
+    }
+
+    if let Some(w) = css_w.or(attr_w) {
+        // 片方だけ指定：もう片方は自然サイズで補完
+        if let Some((nw, nh)) = natural {
+            if nw > 0 && nh > 0 {
+                let ratio = (nh as f32) / (nw as f32);
+                return (w.max(1.0), (w * ratio).max(1.0));
+            }
+        }
+        return (w.max(1.0), 150.0);
+    }
+
+    if let Some(h) = css_h.or(attr_h) {
+        if let Some((nw, nh)) = natural {
+            if nw > 0 && nh > 0 {
+                let ratio = (nw as f32) / (nh as f32);
+                return ((h * ratio).max(1.0), h.max(1.0));
+            }
+        }
+        return (300.0, h.max(1.0));
+    }
+
+    // 明示指定が無いなら自然サイズ
+    if let Some((nw, nh)) = natural {
+        return ((nw as f32).max(1.0), (nh as f32).max(1.0));
+    }
+
+    (300.0, 150.0)
 }
 
 /// styleノードから Text を集める（leaf block の救済用）

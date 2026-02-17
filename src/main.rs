@@ -8,10 +8,10 @@ mod url;
 
 mod display;
 mod gpu;
+mod image_loader;
 mod render;
-mod image;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 
 use winit::{
@@ -22,7 +22,7 @@ use winit::{
 
 use crate::{display::DisplayItem, gpu::GPU};
 
-// ★追加：最小UAスタイル（pxのみ）
+// 最小UAスタイル（pxのみ）
 const UA_CSS: &str = r#"
 /* --- minimal UA stylesheet (px only) --- */
 html, body { display: block; margin: 8px; padding: 0; background: #ffffff; color: #111111; }
@@ -43,9 +43,10 @@ li { display: block; margin: 4px 0; }
 small { font-size: 12px; }
 "#;
 
-// -------------------------
-// <style> 抽出
-// -------------------------
+// ------------------------------------------------------------
+// HTML/CSS 抽出
+// ------------------------------------------------------------
+
 fn extract_style_text(node: &dom::Node, out: &mut String) {
     match &node.node_type {
         dom::NodeType::Element(ed) => {
@@ -57,22 +58,18 @@ fn extract_style_text(node: &dom::Node, out: &mut String) {
                     }
                 }
             } else {
-                for c in &node.children {
-                    extract_style_text(c, out);
-                }
+                node.children
+                    .iter()
+                    .for_each(|c| extract_style_text(c, out));
             }
         }
-        _ => {
-            for c in &node.children {
-                extract_style_text(c, out);
-            }
-        }
+        _ => node
+            .children
+            .iter()
+            .for_each(|c| extract_style_text(c, out)),
     }
 }
 
-// -------------------------
-// <link rel="stylesheet" href="..."> 抽出
-// -------------------------
 fn extract_link_stylesheets(node: &dom::Node, out: &mut Vec<String>) {
     match &node.node_type {
         dom::NodeType::Element(ed) => {
@@ -96,16 +93,14 @@ fn extract_link_stylesheets(node: &dom::Node, out: &mut Vec<String>) {
                     }
                 }
             }
-
-            for c in &node.children {
-                extract_link_stylesheets(c, out);
-            }
+            node.children
+                .iter()
+                .for_each(|c| extract_link_stylesheets(c, out));
         }
-        _ => {
-            for c in &node.children {
-                extract_link_stylesheets(c, out);
-            }
-        }
+        _ => node
+            .children
+            .iter()
+            .for_each(|c| extract_link_stylesheets(c, out)),
     }
 }
 
@@ -115,47 +110,51 @@ fn is_css_content_type(ct: &Option<String>) -> bool {
         .unwrap_or(false)
 }
 
-// -------------------------
-// @import 展開（最小）
-// -------------------------
 fn extract_import_url(line: &str) -> Option<String> {
     let mut s = line.trim();
-
     if !s.starts_with("@import") {
         return None;
     }
-
     s = s.trim_start_matches("@import").trim();
-
     if let Some(x) = s.strip_suffix(';') {
         s = x.trim();
     }
 
-    // url(...)
     if let Some(rest) = s.strip_prefix("url(") {
-        let mut inner = rest.trim();
-        if let Some(pos) = inner.find(')') {
-            inner = inner[..pos].trim();
-        } else {
-            return None;
-        }
-
-        let inner = inner.trim().trim_matches('"').trim_matches('\'').trim();
-        if inner.is_empty() {
-            None
-        } else {
-            Some(inner.to_string())
-        }
+        let inner = rest.trim();
+        let pos = inner.find(')')?;
+        let inner = inner[..pos]
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim();
+        (!inner.is_empty()).then(|| inner.to_string())
     } else {
-        // "..." or '...' (mediaは無視)
         let first = s.split_whitespace().next().unwrap_or("").trim();
         let first = first.trim_matches('"').trim_matches('\'').trim();
-        if first.is_empty() {
-            None
-        } else {
-            Some(first.to_string())
-        }
+        (!first.is_empty()).then(|| first.to_string())
     }
+}
+
+/// ★URLを「正規化した絶対文字列」にする（default port を省略）
+fn url_to_abs_string(u: &url::URL) -> String {
+    match (u.scheme.as_str(), u.port) {
+        ("file", _) => format!("file://{}", u.path),
+        ("http", 80) => format!("http://{}{}", u.host, u.path),
+        ("https", 443) => format!("https://{}{}", u.host, u.path),
+        ("http", p) => format!("http://{}:{}{}", u.host, p, u.path),
+        ("https", p) => format!("https://{}:{}{}", u.host, p, u.path),
+        _ => format!("{}://{}:{}{}", u.scheme, u.host, u.port, u.path),
+    }
+}
+
+/// “resolve + 正規化” を1箇所に集約（Rustっぽく：小さい関数で責務分離）
+fn normalize_against(base: &url::URL, href: &str) -> url::URL {
+    base.resolve_location(href)
+}
+
+fn normalized_key_against(base: &url::URL, href: &str) -> String {
+    url_to_abs_string(&normalize_against(base, href))
 }
 
 fn expand_css_imports(
@@ -170,7 +169,6 @@ fn expand_css_imports(
 
     let mut out = String::new();
 
-    // 超簡易：行単位でimportを置換
     for line in css_text.lines() {
         if let Some(href) = extract_import_url(line) {
             let h = href.trim();
@@ -182,28 +180,26 @@ fn expand_css_imports(
                 continue;
             }
 
-            let import_url = base_url.resolve_location(h);
+            let import_url = normalize_against(base_url, h);
+            let key = url_to_abs_string(&import_url);
 
-            let key = format!(
-                "{}://{}:{}{}",
-                import_url.scheme, import_url.host, import_url.port, import_url.path
-            );
-
-            if visited.contains(&key) {
+            if !visited.insert(key) {
                 continue;
             }
-            visited.insert(key);
 
             let resp = http::request(&import_url);
             if (200..300).contains(&resp.status_code) && is_css_content_type(&resp.content_type) {
                 out.push_str("\n/* ---- @import expanded ---- */\n");
-                let expanded = expand_css_imports(&import_url, &resp.body_text_lossy(), visited, depth + 1);
-                out.push_str(&expanded);
+                out.push_str(&expand_css_imports(
+                    &import_url,
+                    &resp.body_text_lossy(),
+                    visited,
+                    depth + 1,
+                ));
                 out.push('\n');
             }
 
-            // 元の @import 行は消す
-            continue;
+            continue; // 元の @import 行は消す
         }
 
         out.push_str(line);
@@ -213,48 +209,34 @@ fn expand_css_imports(
     out
 }
 
-// -------------------------
-// リンクの当たり判定（scroll考慮）
-// -------------------------
+// ------------------------------------------------------------
+// hit test / scroll / hover
+// ------------------------------------------------------------
+
 fn hit_test_link(display_list: &[DisplayItem], x: f32, y: f32, scroll_y: f32) -> Option<String> {
     let doc_y = y + scroll_y;
 
-    for item in display_list.iter().rev() {
-        match item {
-            DisplayItem::Text(t) => {
-                if let Some(href) = &t.href {
-                    let r = &t.hit;
-                    if x >= r.x && x <= r.x + r.width && doc_y >= r.y && doc_y <= r.y + r.height {
-                        return Some(href.clone());
-                    }
-                }
-            }
-            DisplayItem::Image(im) => {
-                if let Some(href) = &im.href {
-                    let r = &im.hit;
-                    if x >= r.x && x <= r.x + r.width && doc_y >= r.y && doc_y <= r.y + r.height {
-                        return Some(href.clone());
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    None
+    display_list.iter().rev().find_map(|item| match item {
+        DisplayItem::Text(t) => t.href.as_ref().and_then(|href| {
+            let r = &t.hit;
+            (x >= r.x && x <= r.x + r.width && doc_y >= r.y && doc_y <= r.y + r.height)
+                .then(|| href.clone())
+        }),
+        DisplayItem::Image(im) => im.href.as_ref().and_then(|href| {
+            let r = &im.hit;
+            (x >= r.x && x <= r.x + r.width && doc_y >= r.y && doc_y <= r.y + r.height)
+                .then(|| href.clone())
+        }),
+        _ => None,
+    })
 }
 
-// display_list から “ページの高さ” を推定
 fn estimate_doc_height(display_list: &[DisplayItem]) -> f32 {
-    let mut max_y = 0.0f32;
-
-    for it in display_list {
-        match it {
-            DisplayItem::Rect(r) => max_y = max_y.max(r.y + r.h),
-            DisplayItem::Text(t) => max_y = max_y.max(t.hit.y + t.hit.height),
-            DisplayItem::Image(im) => max_y = max_y.max(im.y + im.h),
-        }
-    }
-    max_y.max(1.0)
+    display_list.iter().fold(1.0f32, |max_y, it| match it {
+        DisplayItem::Rect(r) => max_y.max(r.y + r.h),
+        DisplayItem::Text(t) => max_y.max(t.hit.y + t.hit.height),
+        DisplayItem::Image(im) => max_y.max(im.y + im.h),
+    })
 }
 
 fn clamp_scroll(scroll_y: f32, doc_h: f32, view_h: f32) -> f32 {
@@ -266,77 +248,131 @@ fn apply_hover(display_list: &mut [DisplayItem], hovered: Option<&str>) {
     for it in display_list.iter_mut() {
         match it {
             DisplayItem::Text(t) => {
-                // まず元の色へ戻す
                 t.color = t.base_color;
-
-                // hover中ならリンクだけ濃くする
-                if let (Some(h), Some(my)) = (hovered, t.href.as_deref()) {
-                    if my == h {
-                        t.color = darker(t.base_color, 0.75); // 0.75 = 濃く
-                    }
+                if hovered.is_some_and(|h| t.href.as_deref() == Some(h)) {
+                    t.color = darker(t.base_color, 0.75);
                 }
             }
             DisplayItem::Rect(r) => {
-                // まず元の色へ戻す（背景も含む）
                 r.color = r.base_color;
-
-                // 下線だけ（href付き）hoverで濃く
-                if let (Some(h), Some(my)) = (hovered, r.href.as_deref()) {
-                    if my == h {
-                        r.color = darker(r.base_color, 0.75);
-                    }
+                if hovered.is_some_and(|h| r.href.as_deref() == Some(h)) {
+                    r.color = darker(r.base_color, 0.75);
                 }
             }
-            DisplayItem::Image(r) => {}
+            DisplayItem::Image(_) => {}
         }
     }
 }
 
 fn darker(c: [f32; 4], factor: f32) -> [f32; 4] {
-    // RGBだけ暗く、alphaは維持
     [c[0] * factor, c[1] * factor, c[2] * factor, c[3]]
 }
 
-// -------------------------
-// 「ページを作る」処理
-// -------------------------
+// ------------------------------------------------------------
+// 画像 natural size cache（base_url を持つ）
+// ------------------------------------------------------------
+
+#[derive(Clone)]
+struct ImageCache {
+    base_url: url::URL,
+    sizes: HashMap<String, (u32, u32)>, // key: 正規化済み「絶対URL文字列」
+}
+
+impl ImageCache {
+    fn new(base_url: url::URL) -> Self {
+        Self {
+            base_url,
+            sizes: HashMap::new(),
+        }
+    }
+
+    fn insert_size(&mut self, key: String, w: u32, h: u32) {
+        self.sizes.insert(key, (w, h));
+    }
+}
+
+impl layout::ImageSizeProvider for ImageCache {
+    fn normalize_src_key(&self, src: &str) -> Option<String> {
+        let src = src.trim();
+        (!src.is_empty()).then(|| normalized_key_against(&self.base_url, src))
+    }
+
+    fn natural_size_px(&self, key: &str) -> Option<(u32, u32)> {
+        self.sizes.get(key).copied()
+    }
+}
+
+// --- DOM から <img src="..."> を集める ---
+fn extract_img_srcs(node: &dom::Node, out: &mut Vec<String>) {
+    match &node.node_type {
+        dom::NodeType::Element(ed) => {
+            if ed.tag_name == "img" {
+                if let Some(src) = ed.attributes.get("src") {
+                    let s = src.trim();
+                    if !s.is_empty()
+                        && !s.to_lowercase().starts_with("data:")
+                        && !s.to_lowercase().starts_with("javascript:")
+                    {
+                        out.push(s.to_string());
+                    }
+                }
+            }
+            node.children.iter().for_each(|c| extract_img_srcs(c, out));
+        }
+        _ => node.children.iter().for_each(|c| extract_img_srcs(c, out)),
+    }
+}
+
+// ------------------------------------------------------------
+// ページ構築
+// ------------------------------------------------------------
+
 fn build_page(url: &url::URL) -> Vec<DisplayItem> {
-    // 1) HTML取得 → DOM
     let response = http::request(url);
     println!("HTML status: {}", response.status_code);
 
     let dom_root = html::parse(response.body_text_lossy());
     println!("DOM生成完了");
-    // println!("--- DOM start ---");
-    // dump_dom(&dom_root, 0);
-    // println!("--- DOM end ---");
-    // UA + <style> + <link> + @import
+
+    // 1) 画像の自然サイズ cache（正規化 key 統一）
+    let mut img_cache = ImageCache::new(url.clone());
+    {
+        let mut srcs = Vec::new();
+        extract_img_srcs(&dom_root, &mut srcs);
+
+        // Rustっぽく：iterator + insert の戻り値で重複排除（setを使うのもOK）
+        let mut seen = HashSet::new();
+        for src in srcs {
+            let key = normalized_key_against(url, &src);
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            if let Some((w, h)) = image_loader::load_image_natural_size_px(&key) {
+                img_cache.insert_size(key, w, h);
+            }
+        }
+    }
+
+    // 2) CSS（UA + inline + link + @import）
     let mut css_text = String::from(UA_CSS);
     css_text.push('\n');
-
     extract_style_text(&dom_root, &mut css_text);
 
-    let mut css_links: Vec<String> = Vec::new();
+    let mut css_links = Vec::new();
     extract_link_stylesheets(&dom_root, &mut css_links);
 
     println!("inline <style>: {} bytes", css_text.len());
     println!("link stylesheets: {}", css_links.len());
 
     for href in css_links {
-        let css_url = url.resolve_location(&href);
-
-        println!(
-            "fetch css -> {}://{}:{}{}",
-            css_url.scheme, css_url.host, css_url.port, css_url.path
-        );
+        let css_url = normalize_against(url, &href);
+        println!("fetch css -> {}", url_to_abs_string(&css_url));
 
         let resp = http::request(&css_url);
-
         if !(200..300).contains(&resp.status_code) {
             println!("css fetch failed (status {}): {}", resp.status_code, href);
             continue;
         }
-
         if !is_css_content_type(&resp.content_type) {
             println!(
                 "skip non-css content-type: {:?} ({})",
@@ -348,79 +384,51 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
         css_text.push_str("\n/* ---- external stylesheet ---- */\n");
 
         let mut visited = HashSet::new();
-        let base_key = format!(
-            "{}://{}:{}{}",
-            css_url.scheme, css_url.host, css_url.port, css_url.path
-        );
-        visited.insert(base_key);
+        visited.insert(url_to_abs_string(&css_url)); // ★visitedも正規化
 
-        let expanded = expand_css_imports(&css_url, &resp.body_text_lossy(), &mut visited, 0);
-        css_text.push_str(&expanded);
+        css_text.push_str(&expand_css_imports(
+            &css_url,
+            &resp.body_text_lossy(),
+            &mut visited,
+            0,
+        ));
         css_text.push('\n');
     }
 
     // 最後に全体も @import 展開
     {
         let mut visited = HashSet::new();
-        let base_key = format!("{}://{}:{}{}", url.scheme, url.host, url.port, url.path);
-        visited.insert(base_key);
+        visited.insert(url_to_abs_string(url));
         css_text = expand_css_imports(url, &css_text, &mut visited, 0);
     }
 
     println!("CSS total: {} bytes", css_text.len());
-    // println!("--- UA_CSS start ---\n{}\n--- UA_CSS end ---", css_text);
 
-    // style tree
+    // 3) style/layout/display
     let stylesheet = css::Parser::new(css_text).parse_stylesheet();
     let styled_root = style::style_tree(dom_root, &stylesheet);
-
-    // layout tree
     let mut layout_root = layout::build_layout_tree(styled_root);
 
     let mut viewport = layout::Dimensions::default();
     viewport.content.width = 800.0;
     viewport.content.height = 600.0;
 
-    let font_bytes = std::fs::read("C:\\Windows\\Fonts\\meiryo.ttc").unwrap();
+    let font_bytes = std::fs::read(r"C:\Windows\Fonts\meiryo.ttc").unwrap();
     let font = fontdue::Font::from_bytes(font_bytes, fontdue::FontSettings::default()).unwrap();
 
-    layout_root.layout_with_font(viewport, &font);
+    layout_root.layout_with_font(viewport, &font, &img_cache);
     println!("layout完了");
 
-    // display list
     let mut display_list = vec![];
     display::build_display_list(&layout_root, &mut display_list, &font);
     println!("display items: {}", display_list.len());
 
     display_list
 }
-fn dump_dom(node: &crate::dom::Node, depth: usize) {
-    let indent = "  ".repeat(depth);
 
-    match &node.node_type {
-        crate::dom::NodeType::Text(t) => {
-            let s = t.trim();
-            if !s.is_empty() {
-                println!("{}Text({:?})", indent, s);
-            } else {
-                println!("{}Text(\" \")", indent);
-            }
-        }
-        crate::dom::NodeType::Element(e) => {
-            println!(
-                "{}Element <{} id={:?} class={:?}>",
-                indent,
-                e.tag_name,
-                e.id(),
-                e.classes()
-            );
-        }
-    }
-
-    for child in &node.children {
-        dump_dom(child, depth + 1);
-    }
-}
+// ------------------------------------------------------------
+// state / main loop
+// ------------------------------------------------------------
 
 struct BrowserState {
     url: url::URL,
@@ -440,12 +448,9 @@ impl BrowserState {
     }
 
     fn navigate(&mut self, next: url::URL) {
-        println!(
-            "\n=== navigate -> {}://{}:{}{} ===",
-            next.scheme, next.host, next.port, next.path
-        );
+        println!("\n=== navigate -> {} ===", url_to_abs_string(&next));
         self.display_list = build_page(&next);
-        self.doc_height = estimate_doc_height(&self.display_list); // ★忘れず更新
+        self.doc_height = estimate_doc_height(&self.display_list);
         self.url = next;
     }
 }
@@ -454,7 +459,6 @@ fn main() {
     let url_str = env::args().nth(1).expect("url required");
     let initial_url = url::URL::new(&url_str);
 
-    // window + gpu
     let event_loop = EventLoop::new().unwrap();
 
     let window: &'static winit::window::Window = Box::leak(Box::new(
@@ -465,16 +469,11 @@ fn main() {
     ));
 
     let mut gpu = pollster::block_on(GPU::new(window));
-
-    // ブラウザ状態
     let mut state = BrowserState::new(initial_url);
 
-    // マウス座標
     let mut mouse_x = 0.0f32;
     let mut mouse_y = 0.0f32;
-    // hoverしてるhref（変化検出用）
     let mut hovered_href: Option<String> = None;
-
     let mut scroll_y = 0.0f32;
 
     event_loop
@@ -487,10 +486,7 @@ fn main() {
 
                     WindowEvent::Resized(size) => {
                         gpu.resize(size);
-
-                        // ★Resizedでも必ずclamp（破綻防止）
-                        let view_h = gpu.viewport_height();
-                        scroll_y = clamp_scroll(scroll_y, state.doc_height, view_h);
+                        scroll_y = clamp_scroll(scroll_y, state.doc_height, gpu.viewport_height());
                     }
 
                     WindowEvent::MouseWheel { delta, .. } => {
@@ -498,9 +494,8 @@ fn main() {
                             MouseScrollDelta::LineDelta(_, y) => -y * 40.0,
                             MouseScrollDelta::PixelDelta(p) => -(p.y as f32),
                         };
-
-                        let view_h = gpu.viewport_height();
-                        scroll_y = clamp_scroll(scroll_y + dy, state.doc_height, view_h);
+                        scroll_y =
+                            clamp_scroll(scroll_y + dy, state.doc_height, gpu.viewport_height());
                     }
 
                     WindowEvent::CursorMoved { position, .. } => {
@@ -531,16 +526,12 @@ fn main() {
                                 let next = state.url.resolve_location(&href);
                                 state.navigate(next);
 
-                                // ページ遷移で先頭へ
                                 scroll_y = 0.0;
-
-                                // hover解除
                                 hovered_href = None;
                                 apply_hover(&mut state.display_list, None);
 
-                                // 念のためclamp（docが短いページでも破綻しない）
-                                let view_h = gpu.viewport_height();
-                                scroll_y = clamp_scroll(scroll_y, state.doc_height, view_h);
+                                scroll_y =
+                                    clamp_scroll(scroll_y, state.doc_height, gpu.viewport_height());
                             }
                         }
                     }
