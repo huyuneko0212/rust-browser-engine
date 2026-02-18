@@ -1,6 +1,8 @@
 use crate::layout::{BoxType, LayoutBox};
 use fontdue::Font;
 
+use crate::utility::url_utils::url_to_abs_string;
+
 #[derive(Debug, Clone)]
 pub enum DisplayItem {
     Rect(DrawRect),
@@ -40,8 +42,15 @@ pub struct DrawImage {
     pub y: f32,
     pub w: f32,
     pub h: f32,
-    pub src: String, // ★画像URL（相対なら解決済みを入れるのが理想）
-    pub key: String, // ★キャッシュキー（同じ画像を再利用）
+
+    /// ★ src と key を “同じ正規化キー” に統一
+    /// 例: https://example.com/a.png （デフォルトポート省略など）
+    pub src: String,
+    pub key: String,
+
+    /// ★読み込み失敗時フォールバック用
+    pub alt: Option<String>,
+
     pub href: Option<String>,
     pub hit: crate::layout::Rect,
 }
@@ -49,40 +58,36 @@ pub struct DrawImage {
 const UNDERLINE_THICKNESS: f32 = 1.5;
 const UNDERLINE_GAP: f32 = 2.0;
 
-pub fn build_display_list(root: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font) {
+/// ★ base_url を受け取って、画像 src を正規化できるようにする
+pub fn build_display_list(
+    root: &LayoutBox,
+    out: &mut Vec<DisplayItem>,
+    font: &Font,
+    base_url: &crate::url::URL,
+) {
     out.clear();
-    walk(root, out, font);
+    walk(root, out, font, base_url);
 }
 
-fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font) {
+fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &crate::url::URL) {
     // style/script/head/title/meta/link は描画しない（配下も止める）
     if let Some(sn) = node.get_style_node() {
         if let crate::dom::NodeType::Element(ed) = &sn.node.node_type {
-            let t = ed.tag_name.as_str();
-            if t == "style"
-                || t == "script"
-                || t == "head"
-                || t == "title"
-                || t == "meta"
-                || t == "link"
-            {
-                return;
+            match ed.tag_name.as_str() {
+                "style" | "script" | "head" | "title" | "meta" | "link" => return,
+                _ => {}
             }
         }
     }
 
     // --------------------------------------------------------
-    // ★ inline element の background を padding込みで塗る
+    // inline element の background を padding込みで塗る
     // --------------------------------------------------------
-    // ここで Rect を先に push することで、後で描く Text の「背面」になる
     if matches!(node.box_type, BoxType::InlineNode(_)) {
         if let Some(sn) = node.get_style_node() {
-            // InlineNode の Element（span/a等）だけ対象
             if matches!(sn.node.node_type, crate::dom::NodeType::Element(_)) {
                 if let Some(bg) = sn.background_color() {
-                    // 子孫の Text ボックスを union して背景領域を作る
                     if let Some(mut bounds) = collect_descendant_text_bounds(node) {
-                        // padding（px & shorthand対応）
                         let (pt, pr, pb, pl) = padding_trbl(sn);
 
                         bounds.x -= pl;
@@ -126,7 +131,7 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font) {
             }
         }
 
-        // ★li の bullet を描く
+        // li の bullet
         if let Some(sn) = node.get_style_node() {
             if let crate::dom::NodeType::Element(ed) = &sn.node.node_type {
                 if ed.tag_name == "li" {
@@ -135,17 +140,12 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font) {
                     let font_size = font_size_px(sn).unwrap_or(16.0);
                     let line_h = line_height_px(sn, font_size);
 
-                    // bullet位置：本文の少し左、baselineは本文と同じ寄せ
-                    // UA_CSSで ul/ol の margin-left を入れてる前提でだいたい合う
                     let bx = c.x - (font_size * 1.1);
-
-                    // baselineっぽく：display側の本文と同じ (c.y + font_size)
                     let by = c.y + font_size;
 
                     let color = sn.color().unwrap_or([0.1, 0.1, 0.12, 1.0]);
                     let base_color = color;
 
-                    // bullet が ul/ol の外に出すぎる場合は係数を 0.9〜1.3 で調整
                     out.push(DisplayItem::Text(DrawText {
                         x: bx,
                         y: by,
@@ -170,20 +170,15 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font) {
     if let Some(sn) = node.get_style_node() {
         if matches!(node.box_type, BoxType::InlineNode(_)) {
             if let crate::dom::NodeType::Text(t) = &sn.node.node_type {
-                // ★trimやめ：空白を1個に畳む
                 let collapsed = collapse_whitespace(t);
                 let txt = collapsed.trim();
 
-                // 空 or 空白だけは描かない（レイアウトはlayout側で幅を取ってる）
-                if txt.is_empty() || txt == " " {
-                    // skip draw
-                } else {
+                if !txt.is_empty() && txt != " " {
                     let c = &node.dimensions.content;
                     if c.width > 0.0 && c.height > 0.0 {
                         let is_link = sn.link_href.is_some();
                         let font_size = font_size_px(sn).unwrap_or(16.0);
 
-                        // 色：CSS color が無ければデフォルト。リンクは青（CSS未指定時のみ）
                         let mut color = sn.color().unwrap_or([0.1, 0.1, 0.12, 1.0]);
                         if is_link && sn.value("color").is_none() {
                             color = [0.0, 0.35, 0.95, 1.0];
@@ -201,7 +196,6 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font) {
                             hit: c.clone(),
                         }));
 
-                        // text-decoration: none ならリンクでも下線を出さない
                         let underline_allowed = is_link && !text_decoration_none(sn);
                         if underline_allowed {
                             let underline_y = c.y + font_size + UNDERLINE_GAP;
@@ -227,44 +221,72 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font) {
             if ed.tag_name == "img" {
                 let c = &node.dimensions.content;
 
-                // ★追加：レイアウトに来てるか/サイズが付いてるか/リンク継承があるか
+                let src_raw = ed.attributes.get("src").map(|s| s.trim()).unwrap_or("");
+                let alt = ed
+                    .attributes
+                    .get("alt")
+                    .map(|s| collapse_whitespace(s))
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+
                 eprintln!(
-                    "[IMG] x={:.1} y={:.1} w={:.1} h={:.1} href={:?} src={:?}",
+                    "[IMG] x={:.1} y={:.1} w={:.1} h={:.1} href={:?} src={:?} alt={:?}",
                     c.x,
                     c.y,
                     c.width,
                     c.height,
                     sn.link_href.as_deref(),
-                    ed.attributes.get("src").map(|s| s.as_str())
+                    ed.attributes.get("src").map(|s| s.as_str()),
+                    alt.as_deref()
                 );
 
-                if c.width > 0.0 && c.height > 0.0 {
-                    if let Some(src) = ed.attributes.get("src") {
-                        let src = src.trim();
-                        if !src.is_empty() {
-                            let key = src.to_string();
-                            out.push(DisplayItem::Image(DrawImage {
-                                x: c.x,
-                                y: c.y,
-                                w: c.width,
-                                h: c.height,
-                                src: src.to_string(),
-                                key,
-                                href: sn.link_href.clone(), // <a>配下なら入ってる想定
-                                hit: c.clone(),
-                            }));
-                        }
+                // サイズが無いなら描かない（layout問題）
+                if c.width <= 0.0 || c.height <= 0.0 {
+                    eprintln!("[IMG] skipped: zero-size (likely layout issue)");
+                    // それでも alt を出したいならここで Text を出す手もあるが、
+                    // まずは layout を直す方が健全なのでスキップにしておく。
+                } else if src_raw.is_empty() {
+                    // src 自体が無い/空 → ここは render を待てないので最低限 alt を出す
+                    if let Some(alt_text) = alt {
+                        let font_size = font_size_px(sn).unwrap_or(16.0);
+                        let color = sn.color().unwrap_or([0.1, 0.1, 0.12, 1.0]);
+                        out.push(DisplayItem::Text(DrawText {
+                            x: c.x,
+                            y: c.y + font_size,
+                            text: alt_text,
+                            size_px: font_size,
+                            color,
+                            base_color: color,
+                            href: sn.link_href.clone(),
+                            hit: c.clone(),
+                        }));
                     }
                 } else {
-                    // ★追加：表示できない原因が「サイズ0」かどうかの判定
-                    eprintln!("[IMG] skipped: zero-size (likely layout issue)");
+                    // ★ここが本題：src を base_url で解決して、正規化キーを作る
+                    let abs = base_url.resolve_location(src_raw);
+                    let key = url_to_abs_string(&abs);
+
+                    // ★ src/key を同じ文字列にする（安定化）
+                    let src = key.clone();
+
+                    out.push(DisplayItem::Image(DrawImage {
+                        x: c.x,
+                        y: c.y,
+                        w: c.width,
+                        h: c.height,
+                        src,
+                        key,
+                        alt,
+                        href: sn.link_href.clone(),
+                        hit: c.clone(),
+                    }));
                 }
             }
         }
     }
 
     for child in &node.children {
-        walk(child, out, font);
+        walk(child, out, font, base_url);
     }
 }
 
@@ -273,7 +295,7 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font) {
 // ---------------------------
 
 fn font_size_px(sn: &crate::style::StyledNode) -> Option<f32> {
-    sn.value("font-size").and_then(|v| parse_px(v))
+    sn.value("font-size").and_then(parse_px)
 }
 
 fn line_height_px(sn: &crate::style::StyledNode, font_size: f32) -> f32 {
@@ -288,22 +310,18 @@ fn line_height_px(sn: &crate::style::StyledNode, font_size: f32) -> f32 {
     font_size * 1.2
 }
 
-fn parse_px(s: &str) -> Option<f32> {
-    let t = s.trim();
-    if let Some(num) = t.strip_suffix("px") {
-        return num.trim().parse::<f32>().ok();
-    }
-    None
+/// ★ &String / &str どっちでも受けられるようにして E0631 を潰す（Rustっぽく）
+fn parse_px(s: impl AsRef<str>) -> Option<f32> {
+    let t = s.as_ref().trim();
+    t.strip_suffix("px")?.trim().parse::<f32>().ok()
 }
 
-// text-decoration: none 判定（最小）
 fn text_decoration_none(sn: &crate::style::StyledNode) -> bool {
     sn.value("text-decoration")
         .map(|v| v.to_lowercase().split_whitespace().any(|x| x == "none"))
         .unwrap_or(false)
 }
 
-// ★空白を1個に畳む
 fn collapse_whitespace(s: &str) -> String {
     let mut out = String::new();
     let mut prev_space = false;
@@ -323,10 +341,9 @@ fn collapse_whitespace(s: &str) -> String {
 }
 
 // --------------------------------------------------------
-// ★ inline背景のための helper
+// inline背景のための helper
 // --------------------------------------------------------
 
-/// node 配下の “Text(LayoutBox)” の content rect を union して返す
 fn collect_descendant_text_bounds(node: &LayoutBox) -> Option<crate::layout::Rect> {
     let mut min_x = f32::INFINITY;
     let mut min_y = f32::INFINITY;
@@ -338,11 +355,7 @@ fn collect_descendant_text_bounds(node: &LayoutBox) -> Option<crate::layout::Rec
         node, &mut min_x, &mut min_y, &mut max_x, &mut max_y, &mut any,
     );
 
-    if !any {
-        return None;
-    }
-
-    Some(crate::layout::Rect {
+    any.then(|| crate::layout::Rect {
         x: min_x,
         y: min_y,
         width: (max_x - min_x).max(0.0),
@@ -362,7 +375,6 @@ fn collect_descendant_text_bounds_rec(
         if let Some(sn) = ch.get_style_node() {
             if matches!(sn.node.node_type, crate::dom::NodeType::Text(_)) {
                 let c = &ch.dimensions.content;
-                // レイアウト側が幅を確保してるので、空白ノードもここでは含めてOK
                 if c.width > 0.0 && c.height > 0.0 {
                     *min_x = (*min_x).min(c.x);
                     *min_y = (*min_y).min(c.y);
@@ -372,21 +384,16 @@ fn collect_descendant_text_bounds_rec(
                 }
             }
         }
-
         collect_descendant_text_bounds_rec(ch, min_x, min_y, max_x, max_y, any);
     }
 }
 
-/// padding を (top,right,bottom,left) で返す
-/// - padding-top/right/bottom/left があればそれ優先
-/// - padding shorthand は 1〜4値に対応（pxのみ）
 fn padding_trbl(sn: &crate::style::StyledNode) -> (f32, f32, f32, f32) {
     let mut pt = 0.0;
     let mut pr = 0.0;
     let mut pb = 0.0;
     let mut pl = 0.0;
 
-    // shorthand
     if let Some(v) = sn.value("padding") {
         if let Some((a, b, c, d)) = parse_trbl_px(v) {
             pt = a;
@@ -396,53 +403,46 @@ fn padding_trbl(sn: &crate::style::StyledNode) -> (f32, f32, f32, f32) {
         }
     }
 
-    // longhands override
-    if let Some(v) = sn.value("padding-top").and_then(|v| parse_px(v)) {
+    if let Some(v) = sn.value("padding-top").and_then(parse_px) {
         pt = v;
     }
-    if let Some(v) = sn.value("padding-right").and_then(|v| parse_px(v)) {
+    if let Some(v) = sn.value("padding-right").and_then(parse_px) {
         pr = v;
     }
-    if let Some(v) = sn.value("padding-bottom").and_then(|v| parse_px(v)) {
+    if let Some(v) = sn.value("padding-bottom").and_then(parse_px) {
         pb = v;
     }
-    if let Some(v) = sn.value("padding-left").and_then(|v| parse_px(v)) {
+    if let Some(v) = sn.value("padding-left").and_then(parse_px) {
         pl = v;
     }
 
     (pt, pr, pb, pl)
 }
 
-/// TRBL の shorthand（pxのみ）
-/// 1値: a a a a
-/// 2値: a b a b
-/// 3値: a b c b
-/// 4値: a b c d
 fn parse_trbl_px(s: &str) -> Option<(f32, f32, f32, f32)> {
     let parts: Vec<&str> = s.split_whitespace().collect();
-    let px = |x: &str| parse_px(x);
 
     match parts.len() {
         1 => {
-            let a = px(parts[0])?;
+            let a = parse_px(parts[0])?;
             Some((a, a, a, a))
         }
         2 => {
-            let a = px(parts[0])?;
-            let b = px(parts[1])?;
+            let a = parse_px(parts[0])?;
+            let b = parse_px(parts[1])?;
             Some((a, b, a, b))
         }
         3 => {
-            let a = px(parts[0])?;
-            let b = px(parts[1])?;
-            let c = px(parts[2])?;
+            let a = parse_px(parts[0])?;
+            let b = parse_px(parts[1])?;
+            let c = parse_px(parts[2])?;
             Some((a, b, c, b))
         }
         4 => {
-            let a = px(parts[0])?;
-            let b = px(parts[1])?;
-            let c = px(parts[2])?;
-            let d = px(parts[3])?;
+            let a = parse_px(parts[0])?;
+            let b = parse_px(parts[1])?;
+            let c = parse_px(parts[2])?;
+            let d = parse_px(parts[3])?;
             Some((a, b, c, d))
         }
         _ => None,

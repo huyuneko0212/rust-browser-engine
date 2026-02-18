@@ -10,6 +10,7 @@ mod display;
 mod gpu;
 mod image_loader;
 mod render;
+mod utility;
 
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -20,7 +21,10 @@ use winit::{
     window::{CursorIcon, WindowBuilder},
 };
 
-use crate::{display::DisplayItem, gpu::GPU};
+use crate::display::DisplayItem;
+use crate::gpu::GPU;
+
+use crate::utility::url_utils::{normalized_key_against, normalize_against, url_to_abs_string};
 
 // 最小UAスタイル（pxのみ）
 const UA_CSS: &str = r#"
@@ -136,26 +140,9 @@ fn extract_import_url(line: &str) -> Option<String> {
     }
 }
 
-/// ★URLを「正規化した絶対文字列」にする（default port を省略）
-fn url_to_abs_string(u: &url::URL) -> String {
-    match (u.scheme.as_str(), u.port) {
-        ("file", _) => format!("file://{}", u.path),
-        ("http", 80) => format!("http://{}{}", u.host, u.path),
-        ("https", 443) => format!("https://{}{}", u.host, u.path),
-        ("http", p) => format!("http://{}:{}{}", u.host, p, u.path),
-        ("https", p) => format!("https://{}:{}{}", u.host, p, u.path),
-        _ => format!("{}://{}:{}{}", u.scheme, u.host, u.port, u.path),
-    }
-}
-
-/// “resolve + 正規化” を1箇所に集約（Rustっぽく：小さい関数で責務分離）
-fn normalize_against(base: &url::URL, href: &str) -> url::URL {
-    base.resolve_location(href)
-}
-
-fn normalized_key_against(base: &url::URL, href: &str) -> String {
-    url_to_abs_string(&normalize_against(base, href))
-}
+// ------------------------------------------------------------
+// URL 正規化（main.rs では “resolve だけ” にして、文字列化は url_utils に任せる）
+// ------------------------------------------------------------
 
 fn expand_css_imports(
     base_url: &url::URL,
@@ -198,8 +185,7 @@ fn expand_css_imports(
                 ));
                 out.push('\n');
             }
-
-            continue; // 元の @import 行は消す
+            continue;
         }
 
         out.push_str(line);
@@ -294,7 +280,11 @@ impl ImageCache {
 impl layout::ImageSizeProvider for ImageCache {
     fn normalize_src_key(&self, src: &str) -> Option<String> {
         let src = src.trim();
-        (!src.is_empty()).then(|| normalized_key_against(&self.base_url, src))
+        if src.is_empty() {
+            None
+        } else {
+            normalized_key_against(&self.base_url, src)
+        }
     }
 
     fn natural_size_px(&self, key: &str) -> Option<(u32, u32)> {
@@ -343,10 +333,15 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
         // Rustっぽく：iterator + insert の戻り値で重複排除（setを使うのもOK）
         let mut seen = HashSet::new();
         for src in srcs {
-            let key = normalized_key_against(url, &src);
+            let Some(key) = normalized_key_against(url, &src) else {
+                continue;
+            };
+
+            // insert が true のときだけ初登場（重複排除）
             if !seen.insert(key.clone()) {
                 continue;
             }
+
             if let Some((w, h)) = image_loader::load_image_natural_size_px(&key) {
                 img_cache.insert_size(key, w, h);
             }
@@ -384,7 +379,7 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
         css_text.push_str("\n/* ---- external stylesheet ---- */\n");
 
         let mut visited = HashSet::new();
-        visited.insert(url_to_abs_string(&css_url)); // ★visitedも正規化
+        visited.insert(url_to_abs_string(&css_url)); // visitedも正規化
 
         css_text.push_str(&expand_css_imports(
             &css_url,
@@ -420,7 +415,7 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
     println!("layout完了");
 
     let mut display_list = vec![];
-    display::build_display_list(&layout_root, &mut display_list, &font);
+    display::build_display_list(&layout_root, &mut display_list, &font, url);
     println!("display items: {}", display_list.len());
 
     display_list
