@@ -24,7 +24,7 @@ use winit::{
 use crate::display::DisplayItem;
 use crate::gpu::GPU;
 
-use crate::utility::url_utils::{normalized_key_against, normalize_against, url_to_abs_string};
+use crate::utility::url_utils::{normalize_against, normalized_key_against, url_to_abs_string};
 
 // 最小UAスタイル（pxのみ）
 const UA_CSS: &str = r#"
@@ -174,7 +174,10 @@ fn expand_css_imports(
                 continue;
             }
 
-            let resp = http::request(&import_url);
+            let resp = crate::http::request_allow_error(&import_url);
+            if resp.status_code == 0 || resp.body.is_empty() {
+                continue;
+            }
             if (200..300).contains(&resp.status_code) && is_css_content_type(&resp.content_type) {
                 out.push_str("\n/* ---- @import expanded ---- */\n");
                 out.push_str(&expand_css_imports(
@@ -318,7 +321,10 @@ fn extract_img_srcs(node: &dom::Node, out: &mut Vec<String>) {
 // ------------------------------------------------------------
 
 fn build_page(url: &url::URL) -> Vec<DisplayItem> {
-    let response = http::request(url);
+    let response = crate::http::request_allow_error(&url);
+    if response.status_code == 0 || response.body.is_empty() {
+        return vec![];
+    }
     println!("HTML status: {}", response.status_code);
 
     let dom_root = html::parse(response.body_text_lossy());
@@ -363,7 +369,10 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
         let css_url = normalize_against(url, &href);
         println!("fetch css -> {}", url_to_abs_string(&css_url));
 
-        let resp = http::request(&css_url);
+        let resp = crate::http::request_allow_error(&css_url);
+        if resp.status_code == 0 || resp.body.is_empty() {
+            continue;
+        }
         if !(200..300).contains(&resp.status_code) {
             println!("css fetch failed (status {}): {}", resp.status_code, href);
             continue;

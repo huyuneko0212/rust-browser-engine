@@ -43,14 +43,10 @@ pub struct DrawImage {
     pub w: f32,
     pub h: f32,
 
-    /// ★ src と key を “同じ正規化キー” に統一
-    /// 例: https://example.com/a.png （デフォルトポート省略など）
     pub src: String,
     pub key: String,
 
-    /// ★読み込み失敗時フォールバック用
     pub alt: Option<String>,
-
     pub href: Option<String>,
     pub hit: crate::layout::Rect,
 }
@@ -58,7 +54,7 @@ pub struct DrawImage {
 const UNDERLINE_THICKNESS: f32 = 1.5;
 const UNDERLINE_GAP: f32 = 2.0;
 
-/// ★ base_url を受け取って、画像 src を正規化できるようにする
+/// base_url を受け取って、画像 src を正規化できるようにする
 pub fn build_display_list(
     root: &LayoutBox,
     out: &mut Vec<DisplayItem>,
@@ -229,62 +225,43 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty());
 
-                eprintln!(
-                    "[IMG] x={:.1} y={:.1} w={:.1} h={:.1} href={:?} src={:?} alt={:?}",
-                    c.x,
-                    c.y,
-                    c.width,
-                    c.height,
-                    sn.link_href.as_deref(),
-                    ed.attributes.get("src").map(|s| s.as_str()),
-                    alt.as_deref()
-                );
-
                 // サイズが無いなら描かない（layout問題）
                 if c.width <= 0.0 || c.height <= 0.0 {
-                    eprintln!("[IMG] skipped: zero-size (likely layout issue)");
-                    // それでも alt を出したいならここで Text を出す手もあるが、
-                    // まずは layout を直す方が健全なのでスキップにしておく。
+                    // 「最低限」なら何もしない
                 } else if src_raw.is_empty() {
-                    // src 自体が無い/空 → ここは render を待てないので最低限 alt を出す
+                    // src が無い/空 → alt だけ出す
                     if let Some(alt_text) = alt {
-                        let font_size = font_size_px(sn).unwrap_or(16.0);
-                        let color = sn.color().unwrap_or([0.1, 0.1, 0.12, 1.0]);
-                        out.push(DisplayItem::Text(DrawText {
-                            x: c.x,
-                            y: c.y + font_size,
-                            text: alt_text,
-                            size_px: font_size,
-                            color,
-                            base_color: color,
-                            href: sn.link_href.clone(),
-                            hit: c.clone(),
-                        }));
+                        push_alt_text(out, sn, c, alt_text);
                     }
                 } else {
-                    // ★ここが本題：src を base_url で解決して、正規化キーを作る
+                    // src を base_url で解決して、正規化キーを作る
                     let abs = base_url.resolve_location(src_raw);
                     let key = url_to_abs_string(&abs);
 
-                    // ★ src/key を同じ文字列にする（安定化）
-                    let src = key.clone();
-
-                    out.push(DisplayItem::Image(DrawImage {
-                        x: c.x,
-                        y: c.y,
-                        w: c.width,
-                        h: c.height,
-                        src,
-                        key,
-                        alt,
-                        href: sn.link_href.clone(),
-                        hit: c.clone(),
-                    }));
+                    // 画像ロード可否を軽くチェック（失敗なら alt）
+                    // ここは image_loader.rs に `can_load_image` を追加しておく
+                    if crate::image_loader::can_load_image(&key) {
+                        out.push(DisplayItem::Image(DrawImage {
+                            x: c.x,
+                            y: c.y,
+                            w: c.width,
+                            h: c.height,
+                            src: key.clone(), // ★src と key を統一
+                            key,
+                            alt,
+                            href: sn.link_href.clone(),
+                            hit: c.clone(),
+                        }));
+                    } else if let Some(alt_text) = alt {
+                        push_alt_text(out, sn, c, alt_text);
+                    } else {
+                        // alt すら無いなら最低限 "[image]" を出してもいい
+                        // push_alt_text(out, sn, c, "[image]".to_string());
+                    }
                 }
             }
         }
     }
-
     for child in &node.children {
         walk(child, out, font, base_url);
     }
@@ -447,4 +424,26 @@ fn parse_trbl_px(s: &str) -> Option<(f32, f32, f32, f32)> {
         }
         _ => None,
     }
+}
+
+fn push_alt_text(
+    out: &mut Vec<DisplayItem>,
+    sn: &crate::style::StyledNode,
+    c: &crate::layout::Rect,
+    text: String,
+) {
+    let font_size = font_size_px(sn).unwrap_or(16.0);
+    let color = sn.color().unwrap_or([0.1, 0.1, 0.12, 1.0]);
+    let base_color = color;
+
+    out.push(DisplayItem::Text(DrawText {
+        x: c.x,
+        y: c.y + font_size,
+        text,
+        size_px: font_size,
+        color,
+        base_color,
+        href: sn.link_href.clone(),
+        hit: c.clone(),
+    }));
 }

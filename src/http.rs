@@ -1,204 +1,244 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::fmt;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::time::Duration;
 
 use brotli::Decompressor;
 use flate2::read::GzDecoder;
-use native_tls::TlsConnector;
+use native_tls::{HandshakeError, TlsConnector};
 
 use crate::url::URL;
 
+const MAX_REDIRECTS: usize = 10;
+
+#[derive(Debug)]
+pub enum HttpError {
+    Io(std::io::Error),
+    Tls(native_tls::Error),
+    TlsHandshakeWouldBlock,
+    InvalidResponse(&'static str),
+    UnsupportedEncoding(String),
+    DecodeFailed(&'static str),
+    TooManyRedirects,
+    File(std::io::Error),
+}
+
+impl fmt::Display for HttpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HttpError::Io(e) => write!(f, "io error: {}", e),
+            HttpError::Tls(e) => write!(f, "tls error: {}", e),
+            HttpError::TlsHandshakeWouldBlock => write!(f, "tls handshake would-block"),
+            HttpError::InvalidResponse(s) => write!(f, "invalid response: {}", s),
+            HttpError::UnsupportedEncoding(enc) => {
+                write!(f, "unsupported content-encoding: {}", enc)
+            }
+            HttpError::DecodeFailed(s) => write!(f, "decode failed: {}", s),
+            HttpError::TooManyRedirects => write!(f, "too many redirects"),
+            HttpError::File(e) => write!(f, "file error: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for HttpError {}
+
+impl From<std::io::Error> for HttpError {
+    fn from(e: std::io::Error) -> Self {
+        HttpError::Io(e)
+    }
+}
+
+impl From<native_tls::Error> for HttpError {
+    fn from(e: native_tls::Error) -> Self {
+        HttpError::Tls(e)
+    }
+}
+
+/// ★ここが今回の要点：`tls.connect(...)?` を通すための変換
+impl From<HandshakeError<TcpStream>> for HttpError {
+    fn from(e: HandshakeError<TcpStream>) -> Self {
+        match e {
+            HandshakeError::Failure(err) => HttpError::Tls(err),
+            HandshakeError::WouldBlock(_) => HttpError::TlsHandshakeWouldBlock,
+        }
+    }
+}
+
 pub struct Response {
     pub status_code: u16,
-    pub headers: HashMap<String, String>,
-    pub body: Vec<u8>, // ★ bytes に変更
+    pub headers: HashMap<String, String>, // lower-case key
+    pub body: Vec<u8>,
     pub content_type: Option<String>,
 }
 
 impl Response {
-    /// HTML/CSS 用（バイナリは壊れるので画像には使わない）
     pub fn body_text_lossy(&self) -> String {
         String::from_utf8_lossy(&self.body).to_string()
     }
+
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(&name.to_lowercase()).map(|s| s.as_str())
+    }
 }
 
-pub fn request(url: &URL) -> Response {
-    request_inner(url, 0)
+/// ✅ “本命” API：失敗を Result で返す（Rustっぽい / ブラウザっぽい）
+fn request(url: &URL) -> Result<Response, HttpError> {
+    let tls = TlsConnector::new()?;
+    request_with_tls(url, &tls)
 }
 
-fn request_inner(url: &URL, depth: usize) -> Response {
-    if depth > 10 {
-        panic!("Too many redirects");
+/// ✅ 「落ちないレスポンス」が欲しい用途向け（画像ロード等）
+pub fn request_allow_error(url: &URL) -> Response {
+    match request(url) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[http] request failed: {} url={}", e, debug_url(url));
+            Response {
+                status_code: 0,
+                headers: HashMap::new(),
+                body: Vec::new(),
+                content_type: None,
+            }
+        }
+    }
+}
+
+fn request_with_tls(url: &URL, tls: &TlsConnector) -> Result<Response, HttpError> {
+    let mut current = url.clone();
+
+    for _ in 0..=MAX_REDIRECTS {
+        let resp = match current.scheme.as_str() {
+            "file" => request_file(&current)?,
+            "http" | "https" => request_http_like(&current, tls)?,
+            _ => return Err(HttpError::InvalidResponse("unsupported scheme")),
+        };
+
+        if matches!(resp.status_code, 301 | 302 | 303 | 307 | 308) {
+            if let Some(loc) = resp.header("location").map(str::to_string) {
+                current = current.resolve_location(&loc);
+                continue;
+            }
+        }
+
+        return Ok(resp);
     }
 
-    // -------------------------
-    // file://
-    // -------------------------
-    if url.scheme == "file" {
-        return request_file(url);
-    }
+    Err(HttpError::TooManyRedirects)
+}
 
-    // -------------------------
-    // http(s)://
-    // -------------------------
+fn request_file(url: &URL) -> Result<Response, HttpError> {
+    let mut fs_path = url.path.clone();
+    fs_path = fs_path.replace('\\', "/");
+    let fs_path_os = fs_path.replace('/', "\\");
+
+    let bytes = std::fs::read(&fs_path_os).map_err(HttpError::File)?;
+    let content_type = guess_content_type_from_path(&fs_path);
+
+    Ok(Response {
+        status_code: 200,
+        headers: HashMap::new(),
+        body: bytes,
+        content_type,
+    })
+}
+
+fn request_http_like(url: &URL, tls: &TlsConnector) -> Result<Response, HttpError> {
     let addr = format!("{}:{}", url.host, url.port);
-    let stream = TcpStream::connect(addr).unwrap();
+    let stream = TcpStream::connect(addr)?;
+    // ブラウザっぽく：固まり防止（必要なら調整）
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(20)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(20)));
 
-    let req = format!(
+    let req = build_request(url);
+
+    let raw = match url.scheme.as_str() {
+        "https" => {
+            // ★ `HandshakeError<TcpStream>` → `HttpError` 変換があるので `?` が通る
+            let mut tls_stream = tls.connect(&url.host, stream)?;
+            tls_stream.write_all(req.as_bytes())?;
+
+            let mut buf = Vec::new();
+            tls_stream.read_to_end(&mut buf)?;
+            buf
+        }
+        "http" => {
+            let mut s = stream;
+            s.write_all(req.as_bytes())?;
+
+            let mut buf = Vec::new();
+            s.read_to_end(&mut buf)?;
+            buf
+        }
+        _ => return Err(HttpError::InvalidResponse("unsupported scheme")),
+    };
+
+    parse_response_bytes(raw)
+}
+
+/// “ブラウザっぽい” 最低限のリクエスト
+fn build_request(url: &URL) -> String {
+    let path = if url.path.is_empty() { "/" } else { &url.path };
+
+    format!(
         "GET {} HTTP/1.1\r\n\
 Host: {}\r\n\
-User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) rust-browser/0.1\r\n\
+User-Agent: rust-browser/0.1\r\n\
 Accept: text/html,application/xhtml+xml,text/css,image/*,*/*;q=0.8\r\n\
 Accept-Language: ja,en-US;q=0.9,en;q=0.8\r\n\
 Accept-Encoding: gzip, br\r\n\
 Connection: close\r\n\
 \r\n",
-        url.path, url.host
-    );
-
-    let raw_bytes = if url.scheme == "https" {
-        let connector = TlsConnector::new().unwrap();
-        let mut tls = connector.connect(&url.host, stream).unwrap();
-        tls.write_all(req.as_bytes()).unwrap();
-
-        let mut buf = Vec::new();
-        tls.read_to_end(&mut buf).unwrap();
-        buf
-    } else {
-        let mut s = stream;
-        s.write_all(req.as_bytes()).unwrap();
-
-        let mut buf = Vec::new();
-        s.read_to_end(&mut buf).unwrap();
-        buf
-    };
-
-    parse_response(url, raw_bytes, depth)
+        path, url.host
+    )
 }
 
-fn request_file(url: &URL) -> Response {
-    // url.path は "D:/.../a.html" 等
-    let mut fs_path = url.path.clone();
-
-    // 念のためバックスラッシュ許容
-    fs_path = fs_path.replace('\\', "/");
-
-    // Windows: "D:/..." を std::fs が読める形に
-    // （このままでも読めることが多いが、\ に寄せてもOK）
-    let fs_path_os = fs_path.replace('/', "\\");
-
-    let bytes = match std::fs::read(&fs_path_os) {
-        Ok(b) => b,
-        Err(e) => {
-            return Response {
-                status_code: 404,
-                headers: HashMap::new(),
-                body: format!(
-                    "<html><body><h1>File not found</h1><p>{}</p><p>{}</p></body></html>",
-                    fs_path_os, e
-                )
-                .into_bytes(),
-                content_type: Some("text/html; charset=utf-8".to_string()),
-            };
-        }
-    };
-
-    let content_type = guess_content_type_from_path(&fs_path);
-
-    Response {
-        status_code: 200,
-        headers: HashMap::new(),
-        body: bytes,
-        content_type,
-    }
-}
-
-fn guess_content_type_from_path(path: &str) -> Option<String> {
-    let p = path.to_lowercase();
-    if p.ends_with(".html") || p.ends_with(".htm") {
-        Some("text/html; charset=utf-8".to_string())
-    } else if p.ends_with(".css") {
-        Some("text/css; charset=utf-8".to_string())
-    } else if p.ends_with(".txt") {
-        Some("text/plain; charset=utf-8".to_string())
-    } else if p.ends_with(".png") {
-        Some("image/png".to_string())
-    } else if p.ends_with(".jpg") || p.ends_with(".jpeg") {
-        Some("image/jpeg".to_string())
-    } else if p.ends_with(".gif") {
-        Some("image/gif".to_string())
-    } else if p.ends_with(".webp") {
-        Some("image/webp".to_string())
-    } else {
-        Some("application/octet-stream".to_string())
-    }
-}
-
-fn parse_response(url: &URL, resp: Vec<u8>, depth: usize) -> Response {
-    // HTTPヘッダ終端 "\r\n\r\n" を探す
-    let header_end = match find_bytes(&resp, b"\r\n\r\n") {
-        Some(p) => p,
-        None => {
-            // ヘッダが無い/壊れてる：全部ボディ扱い
-            return Response {
-                status_code: 0,
-                headers: HashMap::new(),
-                body: resp,
-                content_type: None,
-            };
-        }
-    };
-
+fn parse_response_bytes(resp: Vec<u8>) -> Result<Response, HttpError> {
+    let header_end =
+        find_bytes(&resp, b"\r\n\r\n").ok_or(HttpError::InvalidResponse("missing header terminator"))?;
     let head_bytes = &resp[..header_end];
     let body_bytes = &resp[header_end + 4..];
 
-    let head = String::from_utf8_lossy(head_bytes).to_string();
+    let head = String::from_utf8_lossy(head_bytes);
     let mut lines = head.split("\r\n");
 
-    let status_line = lines.next().unwrap_or("");
+    let status_line = lines
+        .next()
+        .ok_or(HttpError::InvalidResponse("missing status line"))?;
+
     let mut status_parts = status_line.split_whitespace();
     let _http = status_parts.next().unwrap_or("");
     let status_code: u16 = status_parts.next().unwrap_or("0").parse().unwrap_or(0);
 
-    // headers
     let mut headers = HashMap::new();
     for line in lines {
         if let Some((k, v)) = line.split_once(':') {
             headers.insert(k.to_lowercase(), v.trim().to_string());
         }
     }
-
     let content_type = headers.get("content-type").cloned();
 
-    // redirect
-    if matches!(status_code, 301 | 302 | 303 | 307 | 308) {
-        if let Some(loc) = headers.get("location").cloned() {
-            let new_url = url.resolve_location(&loc);
-            return request_inner(&new_url, depth + 1);
-        }
-    }
-
-    // 304/204/1xx は基本ボディ無し
     if status_code == 204 || status_code == 304 || (100..200).contains(&status_code) {
-        return Response {
+        return Ok(Response {
             status_code,
             headers,
             body: Vec::new(),
             content_type,
-        };
+        });
     }
 
-    // 1) Transfer-Encoding: chunked
-    let mut decoded_body: Vec<u8> = body_bytes.to_vec();
-    if let Some(te) = headers.get("transfer-encoding") {
-        if te.to_lowercase().contains("chunked") {
-            decoded_body = decode_chunked(&decoded_body);
-        }
+    // 1) chunked
+    let mut decoded = body_bytes.to_vec();
+    if headers
+        .get("transfer-encoding")
+        .is_some_and(|v| v.to_lowercase().contains("chunked"))
+    {
+        decoded = decode_chunked(&decoded);
     }
 
-    // 2) gzip / br
+    // 2) content-encoding
     if let Some(enc) = headers.get("content-encoding") {
         let encs: Vec<String> = enc
             .split(',')
@@ -207,57 +247,38 @@ fn parse_response(url: &URL, resp: Vec<u8>, depth: usize) -> Response {
             .collect();
 
         for e in encs.into_iter().rev() {
-            decoded_body = match e.as_str() {
-                "gzip" => {
-                    let mut gz = GzDecoder::new(decoded_body.as_slice());
-                    let mut out = Vec::new();
-                    if gz.read_to_end(&mut out).is_ok() {
-                        out
-                    } else {
-                        return Response {
-                            status_code,
-                            headers,
-                            body: b"gzip decode failed".to_vec(),
-                            content_type,
-                        };
-                    }
-                }
-                "br" => {
-                    let mut br = Decompressor::new(decoded_body.as_slice(), 4096);
-                    let mut out = Vec::new();
-                    if br.read_to_end(&mut out).is_ok() {
-                        out
-                    } else {
-                        return Response {
-                            status_code,
-                            headers,
-                            body: b"brotli decode failed".to_vec(),
-                            content_type,
-                        };
-                    }
-                }
-                other => {
-                    return Response {
-                        status_code,
-                        headers,
-                        body: format!("content-encoding {} not supported yet", other).into_bytes(),
-                        content_type,
-                    };
-                }
+            decoded = match e.as_str() {
+                "gzip" => decode_gzip(&decoded)?,
+                "br" => decode_brotli(&decoded)?,
+                other => return Err(HttpError::UnsupportedEncoding(other.to_string())),
             };
         }
     }
 
-    // UTF-8化しない、bytesのまま返す
-    Response {
+    Ok(Response {
         status_code,
         headers,
-        body: decoded_body,
+        body: decoded,
         content_type,
-    }
+    })
 }
 
-// resp の中から pattern を探して先頭 index を返す
+fn decode_gzip(input: &[u8]) -> Result<Vec<u8>, HttpError> {
+    let mut gz = GzDecoder::new(input);
+    let mut out = Vec::new();
+    gz.read_to_end(&mut out)
+        .map_err(|_| HttpError::DecodeFailed("gzip"))?;
+    Ok(out)
+}
+
+fn decode_brotli(input: &[u8]) -> Result<Vec<u8>, HttpError> {
+    let mut br = Decompressor::new(input, 4096);
+    let mut out = Vec::new();
+    br.read_to_end(&mut out)
+        .map_err(|_| HttpError::DecodeFailed("brotli"))?;
+    Ok(out)
+}
+
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
@@ -265,13 +286,11 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
-// Transfer-Encoding: chunked の最小デコーダ
 fn decode_chunked(input: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut i = 0;
 
     while i < input.len() {
-        // chunk size line
         let line_end = match find_bytes(&input[i..], b"\r\n") {
             Some(p) => i + p,
             None => break,
@@ -279,7 +298,6 @@ fn decode_chunked(input: &[u8]) -> Vec<u8> {
         let line = &input[i..line_end];
         i = line_end + 2;
 
-        // ";" 以降は拡張なので捨てる
         let size_str = match line.iter().position(|&b| b == b';') {
             Some(semi) => &line[..semi],
             None => line,
@@ -294,15 +312,12 @@ fn decode_chunked(input: &[u8]) -> Vec<u8> {
         if size == 0 {
             break;
         }
-
-        // chunk data
         if i + size > input.len() {
             break;
         }
         out.extend_from_slice(&input[i..i + size]);
         i += size;
 
-        // trailing CRLF
         if i + 2 <= input.len() && &input[i..i + 2] == b"\r\n" {
             i += 2;
         } else {
@@ -311,4 +326,32 @@ fn decode_chunked(input: &[u8]) -> Vec<u8> {
     }
 
     out
+}
+
+fn guess_content_type_from_path(path: &str) -> Option<String> {
+    let p = path.to_lowercase();
+    Some(
+        if p.ends_with(".html") || p.ends_with(".htm") {
+            "text/html; charset=utf-8"
+        } else if p.ends_with(".css") {
+            "text/css; charset=utf-8"
+        } else if p.ends_with(".txt") {
+            "text/plain; charset=utf-8"
+        } else if p.ends_with(".png") {
+            "image/png"
+        } else if p.ends_with(".jpg") || p.ends_with(".jpeg") {
+            "image/jpeg"
+        } else if p.ends_with(".gif") {
+            "image/gif"
+        } else if p.ends_with(".webp") {
+            "image/webp"
+        } else {
+            "application/octet-stream"
+        }
+        .to_string(),
+    )
+}
+
+fn debug_url(u: &URL) -> String {
+    format!("{}://{}:{}{}", u.scheme, u.host, u.port, u.path)
 }

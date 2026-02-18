@@ -14,7 +14,9 @@ pub fn load_image_bytes(src: &str) -> Option<Vec<u8>> {
     if starts_with_ignore_ascii_case(src, "file://") {
         return load_file_url_bytes(src);
     }
-    if starts_with_ignore_ascii_case(src, "http://") || starts_with_ignore_ascii_case(src, "https://") {
+    if starts_with_ignore_ascii_case(src, "http://")
+        || starts_with_ignore_ascii_case(src, "https://")
+    {
         return load_http_url_bytes_follow_redirects(src, MAX_REDIRECTS);
     }
 
@@ -42,15 +44,21 @@ fn load_http_url_bytes_follow_redirects(src: &str, max_redirects: usize) -> Opti
     let mut current = crate::url::URL::new(src);
 
     for _ in 0..=max_redirects {
-        let resp = crate::http::request(&current);
-
+        let resp = crate::http::request_allow_error(&current);
+        if resp.status_code == 0 || resp.body.is_empty() {
+            return None;
+        }
         // 2xx
         if (200..300).contains(&resp.status_code) {
             // Content-Type はサイトによって雑なので、ここは「ログだけ」で基本許容
             if let Some(ct) = &resp.content_type {
                 let ct_l = ct.to_lowercase();
                 if !ct_l.starts_with("image/") && !ct_l.contains("octet-stream") {
-                    eprintln!("[img] warn: non-image content-type={:?} url={}", resp.content_type, current.path.to_string());
+                    eprintln!(
+                        "[img] warn: non-image content-type={:?} url={}",
+                        resp.content_type,
+                        current.path.to_string()
+                    );
                 }
             }
             return Some(resp.body);
@@ -73,7 +81,11 @@ fn load_http_url_bytes_follow_redirects(src: &str, max_redirects: usize) -> Opti
             let location = match location {
                 Some(l) if !l.is_empty() => l,
                 _ => {
-                    eprintln!("[img] redirect without Location status={} url={}", resp.status_code, current.path.to_string());
+                    eprintln!(
+                        "[img] redirect without Location status={} url={}",
+                        resp.status_code,
+                        current.path.to_string()
+                    );
                     return None;
                 }
             };
@@ -84,7 +96,11 @@ fn load_http_url_bytes_follow_redirects(src: &str, max_redirects: usize) -> Opti
         }
 
         // error
-        eprintln!("[img] http failed status={} url={}", resp.status_code, current.path.to_string());
+        eprintln!(
+            "[img] http failed status={} url={}",
+            resp.status_code,
+            current.path.to_string()
+        );
         return None;
     }
 
@@ -206,4 +222,8 @@ pub fn load_image_natural_size_px(src: &str) -> Option<(u32, u32)> {
     eprintln!("[img] decoded src={} -> {}x{}", src, w, h);
 
     if w == 0 || h == 0 { None } else { Some((w, h)) }
+}
+
+pub fn can_load_image(key: &str) -> bool {
+    load_image_natural_size_px(key).is_some()
 }
