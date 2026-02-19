@@ -1,8 +1,17 @@
+use std::collections::HashSet;
 use std::fs;
+use std::sync::{Mutex, OnceLock};
 
 use image::GenericImageView;
 
 const MAX_REDIRECTS: usize = 5;
+
+/// 画像ロードに失敗したキー（正規化済み URL 文字列）を覚えておく
+static FAILED_IMAGE_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn failed_cache() -> &'static Mutex<HashSet<String>> {
+    FAILED_IMAGE_KEYS.get_or_init(|| Mutex::new(HashSet::new()))
+}
 
 pub fn load_image_bytes(src: &str) -> Option<Vec<u8>> {
     let src = src.trim();
@@ -56,8 +65,7 @@ fn load_http_url_bytes_follow_redirects(src: &str, max_redirects: usize) -> Opti
                 if !ct_l.starts_with("image/") && !ct_l.contains("octet-stream") {
                     eprintln!(
                         "[img] warn: non-image content-type={:?} url={}",
-                        resp.content_type,
-                        current.path.to_string()
+                        resp.content_type, current.path
                     );
                 }
             }
@@ -66,25 +74,15 @@ fn load_http_url_bytes_follow_redirects(src: &str, max_redirects: usize) -> Opti
 
         // redirect
         if matches!(resp.status_code, 301 | 302 | 303 | 307 | 308) {
-            // ※ http.rs のレスポンスが header map を持ってないと Location を取れない
-            // ここはあなたの http::Response に合わせて取り出し処理を書き換えて。
-            //
-            // 期待:
-            //   resp.headers.get("location") -> Option<&String>
-            //
-            let location = resp
-                .headers
-                .get("location")
-                .or_else(|| resp.headers.get("Location"))
-                .map(|s| s.trim().to_string());
+            // http.rs 側で headers は lower-case に統一しているので "location" だけ見ればOK
+            let location = resp.header("location").map(|s| s.trim().to_string());
 
             let location = match location {
                 Some(l) if !l.is_empty() => l,
                 _ => {
                     eprintln!(
                         "[img] redirect without Location status={} url={}",
-                        resp.status_code,
-                        current.path.to_string()
+                        resp.status_code, current.path
                     );
                     return None;
                 }
@@ -98,8 +96,7 @@ fn load_http_url_bytes_follow_redirects(src: &str, max_redirects: usize) -> Opti
         // error
         eprintln!(
             "[img] http failed status={} url={}",
-            resp.status_code,
-            current.path.to_string()
+            resp.status_code, current.path
         );
         return None;
     }
@@ -139,11 +136,6 @@ fn load_file_url_bytes(src: &str) -> Option<Vec<u8>> {
     if path.starts_with('/') && path.get(2..3) == Some(":") {
         path = path.trim_start_matches('/').to_string();
     }
-
-    // Windows: URLとして渡ってきた場合、"/" の方が多いので "\" に寄せてもOK（readはどっちでも通ることが多い）
-    // ただし UNC を壊したくないので雑に置換しない
-    // ここは必要なら有効化:
-    // path = path.replace('/', "\\");
 
     // "C:\..." や "D:/..." ならOK
     // "/home/..." もOK
@@ -201,19 +193,42 @@ fn trim_prefix_ignore_ascii_case<'a>(s: &'a str, prefix: &str) -> &'a str {
     }
 }
 
+// ------------------------------------------------------------
+// 画像の natural size (+ 失敗キャッシュ)
+// ------------------------------------------------------------
+
 pub fn load_image_natural_size_px(src: &str) -> Option<(u32, u32)> {
+    {
+        let cache = failed_cache().lock().unwrap();
+        if cache.contains(src) {
+            // 失敗済み → すぐ None を返す（重い処理を避ける）
+            // eprintln!("[img] skip (cached failure) src={}", src);
+            return None;
+        }
+    }
+
+    // バイト取得
     let bytes = match load_image_bytes(src) {
         Some(b) => b,
         None => {
             eprintln!("[img] load_image_bytes failed src={}", src);
+
+            let mut cache = failed_cache().lock().unwrap();
+            cache.insert(src.to_string());
+
             return None;
         }
     };
 
+    // デコード
     let img = match image::load_from_memory(&bytes) {
         Ok(i) => i,
         Err(e) => {
             eprintln!("[img] decode failed src={} err={}", src, e);
+
+            let mut cache = failed_cache().lock().unwrap();
+            cache.insert(src.to_string());
+
             return None;
         }
     };
@@ -221,7 +236,16 @@ pub fn load_image_natural_size_px(src: &str) -> Option<(u32, u32)> {
     let (w, h) = img.dimensions();
     eprintln!("[img] decoded src={} -> {}x{}", src, w, h);
 
-    if w == 0 || h == 0 { None } else { Some((w, h)) }
+    if w == 0 || h == 0 {
+        eprintln!("[img] zero-size image src={}", src);
+
+        let mut cache = failed_cache().lock().unwrap();
+        cache.insert(src.to_string());
+
+        None
+    } else {
+        Some((w, h))
+    }
 }
 
 pub fn can_load_image(key: &str) -> bool {
