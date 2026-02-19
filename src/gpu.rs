@@ -4,7 +4,7 @@ use std::fs;
 use wgpu::*;
 use winit::window::Window;
 
-use crate::display::{DisplayItem, DrawImage, DrawRect, DrawText};
+use crate::display::{DisplayItem, DrawImage, DrawRect, DrawText, DrawBorder};
 use crate::image_loader;
 use image::GenericImageView;
 
@@ -511,12 +511,16 @@ impl<'a> GPU<'a> {
         let mut images: Vec<DrawImage> = Vec::new();
 
         for it in items {
-            match it {
-                DisplayItem::Rect(r) => rects.push(r.clone()),
-                DisplayItem::Text(t) => texts.push(t.clone()),
-                DisplayItem::Image(im) => images.push(im.clone()),
+        match it {
+            DisplayItem::Rect(r) => rects.push(r.clone()),
+            DisplayItem::Border(b) => {
+                // ★ border を 4 本の Rect に展開
+                append_border_rects(b, &mut rects);
             }
+            DisplayItem::Text(t) => texts.push(t.clone()),
+            DisplayItem::Image(im) => images.push(im.clone()),
         }
+    }
 
         // ★先に image のキャッシュを作る（bind_group が必要）
         // ここでは「ファイルパス src」を前提に読み込む
@@ -1048,4 +1052,67 @@ fn load_meiryo_font() -> fontdue::Font {
     }
 
     panic!("日本語フォントが見つからない: C:\\Windows\\Fonts\\meiryo.ttc 等を確認して");
+}
+
+fn append_border_rects(b: &DrawBorder, out: &mut Vec<DrawRect>) {
+    let bw = b.border_width.max(0.0);
+    if bw <= 0.0 || b.w <= 0.0 || b.h <= 0.0 {
+        return;
+    }
+
+    let x = b.x;
+    let y = b.y;
+    let w = b.w;
+    let h = b.h;
+    let color = b.color;
+    let base_color = color;
+    let href = b.href.clone();
+
+    // 上
+    out.push(DrawRect {
+        x,
+        y,
+        w,
+        h: bw,
+        color,
+        base_color,
+        href: href.clone(),
+        radius: 0.0, // ★ ここでは radius 無視（後で SDF に乗せるなら使う）
+    });
+
+    // 下
+    out.push(DrawRect {
+        x,
+        y: y + h - bw,
+        w,
+        h: bw,
+        color,
+        base_color,
+        href: href.clone(),
+        radius: 0.0,
+    });
+
+    // 左
+    out.push(DrawRect {
+        x,
+        y,
+        w: bw,
+        h,
+        color,
+        base_color,
+        href: href.clone(),
+        radius: 0.0,
+    });
+
+    // 右
+    out.push(DrawRect {
+        x: x + w - bw,
+        y,
+        w: bw,
+        h,
+        color,
+        base_color,
+        href,
+        radius: 0.0,
+    });
 }

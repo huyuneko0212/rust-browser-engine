@@ -241,8 +241,9 @@ impl Parser {
                 continue;
             }
 
-            if let Some(d) = self.parse_declaration() {
-                decls.push(d);
+            // ★ ここ変更: parse_declaration が Vec<Declaration> を返す
+            if let Some(ds) = self.parse_declaration() {
+                decls.extend(ds);
             } else {
                 self.skip_bad_declaration();
             }
@@ -251,7 +252,11 @@ impl Parser {
         decls
     }
 
-    fn parse_declaration(&mut self) -> Option<Declaration> {
+    /// 1つの CSS 宣言をパースする。
+    /// 通常は 1 つの Declaration を返すが、
+    /// `border: 1px solid red` のようなショートハンドは
+    /// `border-width` / `border-color` など複数に展開する。
+    fn parse_declaration(&mut self) -> Option<Vec<Declaration>> {
         self.consume_whitespace_and_comments();
 
         // name: 英数字/ハイフン/アンダースコア を許可（CSS変数: --foo も通す）
@@ -305,10 +310,10 @@ impl Parser {
             self.consume_char();
         }
 
-        Some(Declaration {
-            name,
-            value: value.trim().to_string(),
-        })
+        let value = value.trim().to_string();
+
+        // ショートハンド展開
+        Some(self.expand_declaration(name, value))
     }
 
     fn skip_bad_declaration(&mut self) {
@@ -328,5 +333,63 @@ impl Parser {
             }
             self.consume_char();
         }
+    }
+
+    /// ショートハンドを展開する。
+    /// - border: 1px solid red;
+    ///   → border-width: 1px; / border-color: red;
+    /// それ以外はそのまま 1 件の Declaration にする。
+    fn expand_declaration(&self, name: String, value: String) -> Vec<Declaration> {
+        if name.eq_ignore_ascii_case("border") {
+            self.expand_border_shorthand(value)
+        } else {
+            vec![Declaration { name, value }]
+        }
+    }
+
+    fn expand_border_shorthand(&self, value: String) -> Vec<Declaration> {
+        let mut decls = Vec::new();
+
+        let mut width: Option<String> = None;
+        let mut color: Option<String> = None;
+
+        // めちゃくちゃ簡易な実装：
+        // - "px" で終わるトークン → 幅
+        // - "solid" は無視
+        // - それ以外の最初のトークン → 色
+        for token in value.split_whitespace() {
+            if token.ends_with("px") && width.is_none() {
+                width = Some(token.to_string());
+            } else if token.eq_ignore_ascii_case("solid") {
+                // 今回は solid のみ対応、値としては保持しない
+                continue;
+            } else if color.is_none() {
+                color = Some(token.to_string());
+            }
+        }
+
+        if let Some(w) = width {
+            decls.push(Declaration {
+                name: "border-width".to_string(),
+                value: w,
+            });
+        }
+        if let Some(c) = color {
+            decls.push(Declaration {
+                name: "border-color".to_string(),
+                value: c,
+            });
+        }
+
+        // もし width / color のどちらも取れなかった場合、
+        // 元の "border" も残しておくほうが安全かもしれない。
+        if decls.is_empty() {
+            decls.push(Declaration {
+                name: "border".to_string(),
+                value,
+            });
+        }
+
+        decls
     }
 }

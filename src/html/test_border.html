@@ -1,0 +1,98 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Border / Border-Radius Test</title>
+  <style>
+    body {
+      margin: 16px;
+      font-size: 16px;
+      background-color: #f0f0f0;
+    }
+
+    h1 {
+      margin-bottom: 24px;
+    }
+
+    .box-row {
+      margin-bottom: 24px;
+    }
+
+    .box {
+      width: 260px;
+      height: 80px;
+      margin: 8px 0;
+      padding: 16px;
+      background-color: white;
+    }
+
+    /* 1. ただの border（角丸なし） */
+    .box-plain {
+      border: 4px solid red;
+    }
+
+    /* 2. border + border-radius */
+    .box-radius {
+      border: 4px solid green;
+      border-radius: 16px;
+    }
+
+    /* 3. 太い border + 大きめ radius */
+    .box-thick {
+      border: 12px solid blue;
+      border-radius: 32px;
+    }
+
+    /* 4. border-color 省略 → color が使われるかテスト */
+    .box-color-inherit {
+      color: blue;
+      border-width: 4px;
+      border-style: solid;
+      /* border-color はあえて指定しない */
+    }
+
+    /* 5. 背景なしで border だけ目立たせる */
+    .box-no-bg {
+      border: 4px solid black;
+      background-color: transparent;
+    }
+  </style>
+</head>
+<body>
+  <h1>Border / Border-Radius テスト</h1>
+
+  <div class="box-row">
+    <div class="box box-plain">
+      border: 4px solid red
+      <br>(角丸なし expected)
+    </div>
+  </div>
+
+  <div class="box-row">
+    <div class="box box-radius">
+      border: 4px solid green;
+      <br>border-radius: 16px;
+    </div>
+  </div>
+
+  <div class="box-row">
+    <div class="box box-thick">
+      border: 12px solid blue;
+      <br>border-radius: 32px;
+    </div>
+  </div>
+
+  <div class="box-row">
+    <div class="box box-color-inherit">
+      color: blue; border-width: 4px; border-style: solid;
+      <br>(border-color 未指定 → color fallback の確認用)
+    </div>
+  </div>
+
+  <div class="box-row">
+    <div class="box box-no-bg">
+      background: transparent + border: 4px solid black;
+    </div>
+  </div>
+</body>
+</html>

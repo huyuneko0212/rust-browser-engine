@@ -67,6 +67,14 @@ impl StyledNode {
     pub fn color(&self) -> Option<[f32; 4]> {
         self.value("color").and_then(|v| parse_color(v))
     }
+    pub fn border_color(&self) -> Option<[f32; 4]> {
+        // border-color がなければ color を使う
+        if let Some(v) = self.value("border-color").or_else(|| self.value("color")) {
+            parse_color(v)
+        } else {
+            None
+        }
+    }
 
     pub fn background_color(&self) -> Option<[f32; 4]> {
         // background も background-color も見る（最小実装）
@@ -143,12 +151,7 @@ fn ancestor_of(e: &ElementData) -> Ancestor {
 fn is_inheritable_prop(name: &str) -> bool {
     matches!(
         name,
-        "color"
-            | "font-size"
-            | "font-family"
-            | "font-weight"
-            | "line-height"
-            | "text-decoration"
+        "color" | "font-size" | "font-family" | "font-weight" | "line-height" | "text-decoration"
     )
 }
 

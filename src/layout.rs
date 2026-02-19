@@ -32,6 +32,7 @@ pub struct Dimensions {
     pub padding: EdgeSizes,
     pub border: EdgeSizes,
     pub margin: EdgeSizes,
+    pub border_radius: f32,
 }
 
 impl Dimensions {
@@ -176,29 +177,55 @@ impl LayoutBox {
         }
     }
 
-    /// margin/padding を style から読む
+    /// margin/padding/border/border-radius を style から読む
     fn calculate_block_model(&mut self, containing: Dimensions) {
         let viewport_w = containing.content.width;
         let viewport_h = containing.content.height.max(1.0);
         let parent_w = containing.content.width;
 
-        let (ml_s, mr_s, mt_s, mb_s, pl_s, pr_s, pt_s, pb_s, margin_sh, padding_sh) =
-            if let Some(style) = self.get_style_node() {
-                (
-                    style.value("margin-left").cloned(),
-                    style.value("margin-right").cloned(),
-                    style.value("margin-top").cloned(),
-                    style.value("margin-bottom").cloned(),
-                    style.value("padding-left").cloned(),
-                    style.value("padding-right").cloned(),
-                    style.value("padding-top").cloned(),
-                    style.value("padding-bottom").cloned(),
-                    style.value("margin").cloned(),
-                    style.value("padding").cloned(),
-                )
-            } else {
-                (None, None, None, None, None, None, None, None, None, None)
-            };
+        let (
+            ml_s,
+            mr_s,
+            mt_s,
+            mb_s,
+            pl_s,
+            pr_s,
+            pt_s,
+            pb_s,
+            margin_sh,
+            padding_sh,
+            // border-width 系
+            blw_s,
+            brw_s,
+            btw_s,
+            bbw_s,
+            border_width_sh,
+            // border-radius
+            border_radius_s,
+        ) = if let Some(style) = self.get_style_node() {
+            (
+                style.value("margin-left").cloned(),
+                style.value("margin-right").cloned(),
+                style.value("margin-top").cloned(),
+                style.value("margin-bottom").cloned(),
+                style.value("padding-left").cloned(),
+                style.value("padding-right").cloned(),
+                style.value("padding-top").cloned(),
+                style.value("padding-bottom").cloned(),
+                style.value("margin").cloned(),
+                style.value("padding").cloned(),
+                // border-width
+                style.value("border-left-width").cloned(),
+                style.value("border-right-width").cloned(),
+                style.value("border-top-width").cloned(),
+                style.value("border-bottom-width").cloned(),
+                style.value("border-width").cloned(),
+                // border-radius（単一値だけ対応）
+                style.value("border-radius").cloned(),
+            )
+        } else {
+            (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+        };
 
         let mut ml = 0.0;
         let mut mr = 0.0;
@@ -209,6 +236,13 @@ impl LayoutBox {
         let mut pt = 0.0;
         let mut pb = 0.0;
 
+        // border-width 初期値
+        let mut bl = 0.0;
+        let mut br = 0.0;
+        let mut bt = 0.0;
+        let mut bb = 0.0;
+
+        // --- margin 個別 ---
         if let Some(v) = ml_s.as_deref() {
             if v.trim() != "auto" {
                 ml = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
@@ -226,6 +260,7 @@ impl LayoutBox {
             mb = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
         }
 
+        // --- padding 個別 ---
         if let Some(v) = pl_s.as_deref() {
             pl = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
         }
@@ -237,6 +272,20 @@ impl LayoutBox {
         }
         if let Some(v) = pb_s.as_deref() {
             pb = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+        }
+
+        // --- border-width 個別 ---
+        if let Some(v) = blw_s.as_deref() {
+            bl = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+        }
+        if let Some(v) = brw_s.as_deref() {
+            br = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+        }
+        if let Some(v) = btw_s.as_deref() {
+            bt = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+        }
+        if let Some(v) = bbw_s.as_deref() {
+            bb = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
         }
 
         // shorthand margin（個別指定が無い場合のみ）
@@ -281,6 +330,34 @@ impl LayoutBox {
             }
         }
 
+        // ★ shorthand border-width（個別指定が無い場合のみ）
+        if blw_s.is_none() && brw_s.is_none() && btw_s.is_none() && bbw_s.is_none() {
+            if let Some(sh) = border_width_sh.as_deref() {
+                let b = parse_4len(sh);
+                if let Some(top) = b.0.as_deref() {
+                    bt = parse_length(top, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                }
+                if let Some(right) = b.1.as_deref() {
+                    br = parse_length(right, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                }
+                if let Some(bottom) = b.2.as_deref() {
+                    bb = parse_length(bottom, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                }
+                if let Some(left) = b.3.as_deref() {
+                    bl = parse_length(left, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                }
+            }
+        }
+
+        // ★ border-radius（単一値だけに対応）
+        let mut border_radius = 0.0;
+        if let Some(v) = border_radius_s.as_deref() {
+            if let Some(r) = parse_length(v, parent_w, viewport_w, viewport_h) {
+                border_radius = r.max(0.0);
+            }
+        }
+
+        // 値を Dimensions に反映
         self.dimensions.margin.left = ml;
         self.dimensions.margin.right = mr;
         self.dimensions.margin.top = mt;
@@ -290,6 +367,13 @@ impl LayoutBox {
         self.dimensions.padding.right = pr;
         self.dimensions.padding.top = pt;
         self.dimensions.padding.bottom = pb;
+
+        self.dimensions.border.left = bl;
+        self.dimensions.border.right = br;
+        self.dimensions.border.top = bt;
+        self.dimensions.border.bottom = bb;
+
+        self.dimensions.border_radius = border_radius;
     }
 
     fn calculate_block_width(&mut self, containing_block: Dimensions) {

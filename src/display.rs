@@ -6,6 +6,7 @@ use crate::utility::url_utils::url_to_abs_string;
 #[derive(Debug, Clone)]
 pub enum DisplayItem {
     Rect(DrawRect),
+    Border(DrawBorder), // ★ 追加: 枠線専用
     Text(DrawText),
     Image(DrawImage),
 }
@@ -17,9 +18,25 @@ pub struct DrawRect {
     pub w: f32,
     pub h: f32,
 
+    pub radius: f32, // ★ 追加: border-radius 用
+
     pub color: [f32; 4],
     pub base_color: [f32; 4], // hover解除で戻す用
     pub href: Option<String>, // 下線だけリンクに紐付ける（背景はNone）
+}
+
+#[derive(Debug, Clone)]
+pub struct DrawBorder {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+
+    pub radius: f32,       // 角丸枠用
+    pub border_width: f32, // とりあえず単一値
+
+    pub color: [f32; 4],
+    pub href: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +95,7 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
 
     // --------------------------------------------------------
     // inline element の background を padding込みで塗る
+    // （border-radius は一旦 0 扱い）
     // --------------------------------------------------------
     if matches!(node.box_type, BoxType::InlineNode(_)) {
         if let Some(sn) = node.get_style_node() {
@@ -97,6 +115,7 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
                                 y: bounds.y,
                                 w: bounds.width,
                                 h: bounds.height,
+                                radius: 0.0, // ★ inline 背景はひとまず角丸なし
                                 color: bg,
                                 base_color: bg,
                                 href: None,
@@ -108,19 +127,68 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
         }
     }
 
-    // 背景：BlockNode だけ
+    // --------------------------------------------------------
+    // BlockNode の背景 + border
+    // --------------------------------------------------------
     if matches!(node.box_type, BoxType::BlockNode(_)) {
-        let c = &node.dimensions.content;
-        if c.width > 0.0 && c.height > 0.0 {
+        let d = &node.dimensions;
+
+        // ★ border-box の矩形を計算
+        let border_box = crate::layout::Rect {
+            x: d.content.x - d.padding.left - d.border.left,
+            y: d.content.y - d.padding.top - d.border.top,
+            width: d.content.width
+                + d.padding.left
+                + d.padding.right
+                + d.border.left
+                + d.border.right,
+            height: d.content.height
+                + d.padding.top
+                + d.padding.bottom
+                + d.border.top
+                + d.border.bottom,
+        };
+
+        if border_box.width > 0.0 && border_box.height > 0.0 {
             if let Some(sn) = node.get_style_node() {
+                let radius = d.border_radius.max(0.0);
+
+                // 背景（background-color は border-box まで塗る）
                 if let Some(bg) = sn.background_color() {
                     out.push(DisplayItem::Rect(DrawRect {
-                        x: c.x,
-                        y: c.y,
-                        w: c.width,
-                        h: c.height,
+                        x: border_box.x,
+                        y: border_box.y,
+                        w: border_box.width,
+                        h: border_box.height,
+                        radius, // ★ 角丸背景！
                         color: bg,
                         base_color: bg,
+                        href: None,
+                    }));
+                }
+
+                // border（とりあえず四辺同じ太さ前提で max を使う）
+                let border_width = d
+                    .border
+                    .left
+                    .max(d.border.right)
+                    .max(d.border.top)
+                    .max(d.border.bottom);
+
+                if border_width > 0.0 {
+                    // ★ style.rs 側で border_color() を実装しておく想定
+                    let border_color = sn
+                        .border_color()
+                        .unwrap_or([0.0, 0.0, 0.0, 1.0]); // デフォルト黒
+
+                    out.push(DisplayItem::Border(DrawBorder {
+                        x: border_box.x,
+                        y: border_box.y,
+                        w: border_box.width,
+                        h: border_box.height,
+                        radius,
+                        border_width,
+                        color: border_color,
                         href: None,
                     }));
                 }
@@ -200,6 +268,7 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
                                 y: underline_y,
                                 w: c.width.max(0.0),
                                 h: UNDERLINE_THICKNESS,
+                                radius: 0.0, // 下線は角丸なし
                                 color,
                                 base_color,
                                 href: sn.link_href.clone(),
@@ -262,6 +331,7 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
             }
         }
     }
+
     for child in &node.children {
         walk(child, out, font, base_url);
     }

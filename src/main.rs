@@ -225,6 +225,7 @@ fn estimate_doc_height(display_list: &[DisplayItem]) -> f32 {
         DisplayItem::Rect(r) => max_y.max(r.y + r.h),
         DisplayItem::Text(t) => max_y.max(t.hit.y + t.hit.height),
         DisplayItem::Image(im) => max_y.max(im.y + im.h),
+        DisplayItem::Border(b) => max_y.max(b.y + b.h),
     })
 }
 
@@ -249,6 +250,10 @@ fn apply_hover(display_list: &mut [DisplayItem], hovered: Option<&str>) {
                 }
             }
             DisplayItem::Image(_) => {}
+            DisplayItem::Border(_) => {
+                // 今のところ hover では何もしない
+                // （必要になったら DrawBorder に base_color を持たせてここで暗くする）
+            }
         }
     }
 }
