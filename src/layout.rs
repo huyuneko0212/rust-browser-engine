@@ -26,13 +26,69 @@ pub struct EdgeSizes {
     pub bottom: f32,
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CornerRadii {
+    pub top_left: f32,
+    pub top_right: f32,
+    pub bottom_right: f32,
+    pub bottom_left: f32,
+}
+
+impl CornerRadii {
+    pub fn normalize(self, width: f32, height: f32) -> Self {
+        let mut out = Self {
+            top_left: self.top_left.max(0.0),
+            top_right: self.top_right.max(0.0),
+            bottom_right: self.bottom_right.max(0.0),
+            bottom_left: self.bottom_left.max(0.0),
+        };
+
+        if width <= 0.0 || height <= 0.0 {
+            return Self::default();
+        }
+
+        let scale = 1.0_f32
+            .min(scale_for_side(width, out.top_left + out.top_right))
+            .min(scale_for_side(width, out.bottom_left + out.bottom_right))
+            .min(scale_for_side(height, out.top_left + out.bottom_left))
+            .min(scale_for_side(height, out.top_right + out.bottom_right));
+
+        if scale < 1.0 {
+            out.top_left *= scale;
+            out.top_right *= scale;
+            out.bottom_right *= scale;
+            out.bottom_left *= scale;
+        }
+
+        out
+    }
+
+    pub fn inset_uniform(self, inset: f32) -> Self {
+        Self {
+            top_left: (self.top_left - inset).max(0.0),
+            top_right: (self.top_right - inset).max(0.0),
+            bottom_right: (self.bottom_right - inset).max(0.0),
+            bottom_left: (self.bottom_left - inset).max(0.0),
+        }
+    }
+
+    pub fn as_array(self) -> [f32; 4] {
+        [
+            self.top_left,
+            self.top_right,
+            self.bottom_right,
+            self.bottom_left,
+        ]
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct Dimensions {
     pub content: Rect,
     pub padding: EdgeSizes,
     pub border: EdgeSizes,
     pub margin: EdgeSizes,
-    pub border_radius: f32,
+    pub border_radius: CornerRadii,
 }
 
 impl Dimensions {
@@ -201,7 +257,11 @@ impl LayoutBox {
             bbw_s,
             border_width_sh,
             // border-radius
-            border_radius_s,
+            border_radius_sh,
+            border_tl_radius_s,
+            border_tr_radius_s,
+            border_br_radius_s,
+            border_bl_radius_s,
         ) = if let Some(style) = self.get_style_node() {
             (
                 style.value("margin-left").cloned(),
@@ -220,11 +280,23 @@ impl LayoutBox {
                 style.value("border-top-width").cloned(),
                 style.value("border-bottom-width").cloned(),
                 style.value("border-width").cloned(),
-                // border-radius（単一値だけ対応）
+                // border-radius
                 style.value("border-radius").cloned(),
+                style.value("border-top-left-radius").cloned(),
+                style.value("border-top-right-radius").cloned(),
+                style.value("border-bottom-right-radius").cloned(),
+                style.value("border-bottom-left-radius").cloned(),
             )
         } else {
-            (None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+            (
+                None, None, None, None, // margin *
+                None, None, None, None, // padding *
+                None, None, // margin, padding shorthand
+                None, None, None, None, // border-*-width
+                None, // border-width
+                None, // border-radius
+                None, None, None, None, // border-*-radius
+            )
         };
 
         let mut ml = 0.0;
@@ -330,7 +402,7 @@ impl LayoutBox {
             }
         }
 
-        // ★ shorthand border-width（個別指定が無い場合のみ）
+        // shorthand border-width（個別指定が無い場合のみ）
         if blw_s.is_none() && brw_s.is_none() && btw_s.is_none() && bbw_s.is_none() {
             if let Some(sh) = border_width_sh.as_deref() {
                 let b = parse_4len(sh);
@@ -349,11 +421,31 @@ impl LayoutBox {
             }
         }
 
-        // ★ border-radius（単一値だけに対応）
-        let mut border_radius = 0.0;
-        if let Some(v) = border_radius_s.as_deref() {
-            if let Some(r) = parse_length(v, parent_w, viewport_w, viewport_h) {
-                border_radius = r.max(0.0);
+        // border-radius
+        let mut border_radius = CornerRadii::default();
+        if let Some(v) = border_radius_sh.as_deref() {
+            if let Some(r) = parse_border_radius_shorthand(v, parent_w, viewport_w, viewport_h) {
+                border_radius = r;
+            }
+        }
+        if let Some(v) = border_tl_radius_s.as_deref() {
+            if let Some(r) = parse_corner_radius(v, parent_w, viewport_w, viewport_h) {
+                border_radius.top_left = r;
+            }
+        }
+        if let Some(v) = border_tr_radius_s.as_deref() {
+            if let Some(r) = parse_corner_radius(v, parent_w, viewport_w, viewport_h) {
+                border_radius.top_right = r;
+            }
+        }
+        if let Some(v) = border_br_radius_s.as_deref() {
+            if let Some(r) = parse_corner_radius(v, parent_w, viewport_w, viewport_h) {
+                border_radius.bottom_right = r;
+            }
+        }
+        if let Some(v) = border_bl_radius_s.as_deref() {
+            if let Some(r) = parse_corner_radius(v, parent_w, viewport_w, viewport_h) {
+                border_radius.bottom_left = r;
             }
         }
 
@@ -811,6 +903,78 @@ fn parse_4len(
             Some(parts[3].clone()),
         ),
     }
+}
+
+fn scale_for_side(limit: f32, sum: f32) -> f32 {
+    if sum > 0.0 { limit / sum } else { 1.0 }
+}
+
+fn parse_border_radius_shorthand(
+    s: &str,
+    containing: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> Option<CornerRadii> {
+    let horizontal = s.split('/').next()?.trim();
+    if horizontal.is_empty() {
+        return None;
+    }
+
+    let parts: Vec<&str> = horizontal
+        .split_whitespace()
+        .filter(|p| !p.is_empty())
+        .collect();
+
+    match parts.len() {
+        1 => {
+            let a = parse_length(parts[0], containing, viewport_w, viewport_h)?.max(0.0);
+            Some(CornerRadii {
+                top_left: a,
+                top_right: a,
+                bottom_right: a,
+                bottom_left: a,
+            })
+        }
+        2 => {
+            let a = parse_length(parts[0], containing, viewport_w, viewport_h)?.max(0.0);
+            let b = parse_length(parts[1], containing, viewport_w, viewport_h)?.max(0.0);
+            Some(CornerRadii {
+                top_left: a,
+                top_right: b,
+                bottom_right: a,
+                bottom_left: b,
+            })
+        }
+        3 => {
+            let a = parse_length(parts[0], containing, viewport_w, viewport_h)?.max(0.0);
+            let b = parse_length(parts[1], containing, viewport_w, viewport_h)?.max(0.0);
+            let c = parse_length(parts[2], containing, viewport_w, viewport_h)?.max(0.0);
+            Some(CornerRadii {
+                top_left: a,
+                top_right: b,
+                bottom_right: c,
+                bottom_left: b,
+            })
+        }
+        4 => {
+            let a = parse_length(parts[0], containing, viewport_w, viewport_h)?.max(0.0);
+            let b = parse_length(parts[1], containing, viewport_w, viewport_h)?.max(0.0);
+            let c = parse_length(parts[2], containing, viewport_w, viewport_h)?.max(0.0);
+            let d = parse_length(parts[3], containing, viewport_w, viewport_h)?.max(0.0);
+            Some(CornerRadii {
+                top_left: a,
+                top_right: b,
+                bottom_right: c,
+                bottom_left: d,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn parse_corner_radius(s: &str, containing: f32, viewport_w: f32, viewport_h: f32) -> Option<f32> {
+    let first = s.split('/').next()?.split_whitespace().next()?;
+    parse_length(first, containing, viewport_w, viewport_h).map(|v| v.max(0.0))
 }
 
 fn font_size_px(sn: &crate::style::StyledNode) -> Option<f32> {

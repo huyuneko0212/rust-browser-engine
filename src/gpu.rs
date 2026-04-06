@@ -4,7 +4,7 @@ use std::fs;
 use wgpu::*;
 use winit::window::Window;
 
-use crate::display::{DisplayItem, DrawImage, DrawRect, DrawText, DrawBorder};
+use crate::display::{DisplayItem, DrawBorder, DrawImage, DrawRect, DrawText};
 use crate::image_loader;
 use image::GenericImageView;
 
@@ -13,22 +13,105 @@ use image::GenericImageView;
 struct RectVertex {
     pos: [f32; 2],
     color: [f32; 4],
+
+    outer_min: [f32; 2],
+    outer_max: [f32; 2],
+    outer_radii: [f32; 4],
+
+    inner_min: [f32; 2],
+    inner_max: [f32; 2],
+    inner_radii: [f32; 4],
+
+    kind: f32, // 0 = fill, 1 = border ring
 }
 impl RectVertex {
     fn layout<'a>() -> VertexBufferLayout<'a> {
+        use std::mem::size_of;
+        let stride = size_of::<RectVertex>() as BufferAddress;
+
         VertexBufferLayout {
-            array_stride: std::mem::size_of::<RectVertex>() as BufferAddress,
+            array_stride: stride,
             step_mode: VertexStepMode::Vertex,
             attributes: &[
+                // @location(0) pos
                 VertexAttribute {
                     offset: 0,
                     shader_location: 0,
                     format: VertexFormat::Float32x2,
                 },
+                // @location(1) color
                 VertexAttribute {
-                    offset: std::mem::size_of::<[f32; 2]>() as BufferAddress,
+                    offset: size_of::<[f32; 2]>() as BufferAddress,
                     shader_location: 1,
                     format: VertexFormat::Float32x4,
+                },
+                // @location(2) rect_min
+                VertexAttribute {
+                    offset: (size_of::<[f32; 2]>() + size_of::<[f32; 4]>()) as BufferAddress,
+                    shader_location: 2,
+                    format: VertexFormat::Float32x2,
+                },
+                // @location(3) outer_max
+                VertexAttribute {
+                    offset: (size_of::<[f32; 2]>() + size_of::<[f32; 4]>() + size_of::<[f32; 2]>())
+                        as BufferAddress,
+                    shader_location: 3,
+                    format: VertexFormat::Float32x2,
+                },
+                // @location(4) outer_radii
+                VertexAttribute {
+                    offset: (size_of::<[f32; 2]>()
+                        + size_of::<[f32; 4]>()
+                        + size_of::<[f32; 2]>()
+                        + size_of::<[f32; 2]>()) as BufferAddress,
+                    shader_location: 4,
+                    format: VertexFormat::Float32x4,
+                },
+                // @location(5) inner_min
+                VertexAttribute {
+                    offset: (size_of::<[f32; 2]>()
+                        + size_of::<[f32; 4]>()
+                        + size_of::<[f32; 2]>()
+                        + size_of::<[f32; 2]>()
+                        + size_of::<[f32; 4]>()) as BufferAddress,
+                    shader_location: 5,
+                    format: VertexFormat::Float32x2,
+                },
+                // @location(6) inner_max
+                VertexAttribute {
+                    offset: (size_of::<[f32; 2]>()
+                        + size_of::<[f32; 4]>()
+                        + size_of::<[f32; 2]>()
+                        + size_of::<[f32; 2]>()
+                        + size_of::<[f32; 4]>()
+                        + size_of::<[f32; 2]>()) as BufferAddress,
+                    shader_location: 6,
+                    format: VertexFormat::Float32x2,
+                },
+                // @location(7) inner_radii
+                VertexAttribute {
+                    offset: (size_of::<[f32; 2]>()
+                        + size_of::<[f32; 4]>()
+                        + size_of::<[f32; 2]>()
+                        + size_of::<[f32; 2]>()
+                        + size_of::<[f32; 4]>()
+                        + size_of::<[f32; 2]>()
+                        + size_of::<[f32; 2]>()) as BufferAddress,
+                    shader_location: 7,
+                    format: VertexFormat::Float32x4,
+                },
+                // @location(8) kind
+                VertexAttribute {
+                    offset: (size_of::<[f32; 2]>()
+                        + size_of::<[f32; 4]>()
+                        + size_of::<[f32; 2]>()
+                        + size_of::<[f32; 2]>()
+                        + size_of::<[f32; 4]>()
+                        + size_of::<[f32; 2]>()
+                        + size_of::<[f32; 2]>()
+                        + size_of::<[f32; 4]>()) as BufferAddress,
+                    shader_location: 8,
+                    format: VertexFormat::Float32,
                 },
             ],
         }
@@ -507,24 +590,20 @@ impl<'a> GPU<'a> {
     pub fn render_items(&mut self, items: &[DisplayItem], scroll_y: f32) {
         // 分解
         let mut rects: Vec<DrawRect> = Vec::new();
+        let mut borders: Vec<DrawBorder> = Vec::new();
         let mut texts: Vec<DrawText> = Vec::new();
         let mut images: Vec<DrawImage> = Vec::new();
 
         for it in items {
-        match it {
-            DisplayItem::Rect(r) => rects.push(r.clone()),
-            DisplayItem::Border(b) => {
-                // ★ border を 4 本の Rect に展開
-                append_border_rects(b, &mut rects);
+            match it {
+                DisplayItem::Rect(r) => rects.push(r.clone()),
+                DisplayItem::Border(b) => borders.push(b.clone()),
+                DisplayItem::Text(t) => texts.push(t.clone()),
+                DisplayItem::Image(im) => images.push(im.clone()),
             }
-            DisplayItem::Text(t) => texts.push(t.clone()),
-            DisplayItem::Image(im) => images.push(im.clone()),
         }
-    }
 
-        // ★先に image のキャッシュを作る（bind_group が必要）
-        // ここでは「ファイルパス src」を前提に読み込む
-        // 失敗した画像は描画スキップ
+        // 先に image のキャッシュを作る（bind_group が必要）
         let mut drawable_images: Vec<DrawImage> = Vec::new();
         for im in &images {
             let _ = self.get_or_upload_image(&im.key, &im.src);
@@ -533,7 +612,8 @@ impl<'a> GPU<'a> {
             }
         }
 
-        let rect_verts = self.rect_vertices(&rects, scroll_y);
+        let mut rect_verts = self.rect_vertices(&rects, scroll_y);
+        rect_verts.extend(self.border_vertices(&borders, scroll_y));
         let image_verts = self.image_vertices(&drawable_images, scroll_y);
         let text_verts = self.text_vertices(&texts, scroll_y);
 
@@ -592,7 +672,7 @@ impl<'a> GPU<'a> {
                 timestamp_writes: None,
             });
 
-            // rect（背景）
+            // rect（背景 + border）
             if !rect_verts.is_empty() {
                 pass.set_pipeline(&self.rect_pipeline);
                 pass.set_vertex_buffer(0, self.rect_vbuf.slice(..));
@@ -696,38 +776,82 @@ impl<'a> GPU<'a> {
                 continue;
             }
 
+            // NDC 変換
             let x1 = (r.x / w) * 2.0 - 1.0;
             let y1 = 1.0 - (ry / h) * 2.0;
             let x2 = ((r.x + r.w) / w) * 2.0 - 1.0;
             let y2 = 1.0 - ((ry + r.h) / h) * 2.0;
 
-            let c = r.color;
+            push_rect_vertices(
+                &mut out,
+                [x1, y1],
+                [x2, y2],
+                [r.x, ry],
+                [r.x + r.w, ry + r.h],
+                r.radius.normalize(r.w, r.h).as_array(),
+                [r.x, ry],
+                [r.x, ry],
+                [0.0; 4],
+                0.0,
+                r.color,
+            );
+        }
 
-            out.push(RectVertex {
-                pos: [x1, y1],
-                color: c,
-            });
-            out.push(RectVertex {
-                pos: [x2, y1],
-                color: c,
-            });
-            out.push(RectVertex {
-                pos: [x2, y2],
-                color: c,
-            });
+        out
+    }
 
-            out.push(RectVertex {
-                pos: [x1, y1],
-                color: c,
-            });
-            out.push(RectVertex {
-                pos: [x2, y2],
-                color: c,
-            });
-            out.push(RectVertex {
-                pos: [x1, y2],
-                color: c,
-            });
+    fn border_vertices(&self, borders: &[DrawBorder], scroll_y: f32) -> Vec<RectVertex> {
+        let mut out = Vec::with_capacity(borders.len() * 6);
+
+        let w = self.config.width as f32;
+        let h = self.config.height as f32;
+
+        for b in borders {
+            if b.w <= 0.0 || b.h <= 0.0 {
+                continue;
+            }
+
+            let ry = b.y - scroll_y;
+            if ry > h || (ry + b.h) < 0.0 {
+                continue;
+            }
+            if b.x > w || (b.x + b.w) < 0.0 {
+                continue;
+            }
+
+            let x1 = (b.x / w) * 2.0 - 1.0;
+            let y1 = 1.0 - (ry / h) * 2.0;
+            let x2 = ((b.x + b.w) / w) * 2.0 - 1.0;
+            let y2 = 1.0 - ((ry + b.h) / h) * 2.0;
+
+            let outer = b.radius.normalize(b.w, b.h);
+            let bw = b.border_width.max(0.0);
+
+            let inner_w = (b.w - bw * 2.0).max(0.0);
+            let inner_h = (b.h - bw * 2.0).max(0.0);
+            let inner_min = [b.x + bw, ry + bw];
+            let inner_max = [inner_min[0] + inner_w, inner_min[1] + inner_h];
+            let inner = outer.inset_uniform(bw).normalize(inner_w, inner_h);
+
+            let kind = if inner_w > 0.0 && inner_h > 0.0 {
+                1.0
+            } else {
+                0.0
+            };
+
+            push_rect_vertices(
+                &mut out,
+                [x1, y1],
+                [x2, y2],
+                [b.x, ry],
+                [b.x + b.w, ry + b.h],
+                outer.as_array(),
+                inner_min,
+                inner_max,
+                inner.as_array(),
+                kind,
+                b.color,
+            );
         }
 
         out
@@ -953,7 +1077,7 @@ impl<'a> GPU<'a> {
             return self.image_cache.get(key);
         }
 
-        // ★ file:// / http(s):// 両対応（image.rs に寄せる）
+        // file:// / http(s):// 両対応（image_loader に委譲）
         let bytes = image_loader::load_image_bytes(src)?;
         let img = image::load_from_memory(&bytes).ok()?;
         let rgba = img.to_rgba8();
@@ -1054,65 +1178,36 @@ fn load_meiryo_font() -> fontdue::Font {
     panic!("日本語フォントが見つからない: C:\\Windows\\Fonts\\meiryo.ttc 等を確認して");
 }
 
-fn append_border_rects(b: &DrawBorder, out: &mut Vec<DrawRect>) {
-    let bw = b.border_width.max(0.0);
-    if bw <= 0.0 || b.w <= 0.0 || b.h <= 0.0 {
-        return;
-    }
-
-    let x = b.x;
-    let y = b.y;
-    let w = b.w;
-    let h = b.h;
-    let color = b.color;
-    let base_color = color;
-    let href = b.href.clone();
-
-    // 上
-    out.push(DrawRect {
-        x,
-        y,
-        w,
-        h: bw,
+fn push_rect_vertices(
+    out: &mut Vec<RectVertex>,
+    ndc_min: [f32; 2],
+    ndc_max: [f32; 2],
+    outer_min: [f32; 2],
+    outer_max: [f32; 2],
+    outer_radii: [f32; 4],
+    inner_min: [f32; 2],
+    inner_max: [f32; 2],
+    inner_radii: [f32; 4],
+    kind: f32,
+    color: [f32; 4],
+) {
+    let v = |px: f32, py: f32| RectVertex {
+        pos: [px, py],
         color,
-        base_color,
-        href: href.clone(),
-        radius: 0.0, // ★ ここでは radius 無視（後で SDF に乗せるなら使う）
-    });
+        outer_min,
+        outer_max,
+        outer_radii,
+        inner_min,
+        inner_max,
+        inner_radii,
+        kind,
+    };
 
-    // 下
-    out.push(DrawRect {
-        x,
-        y: y + h - bw,
-        w,
-        h: bw,
-        color,
-        base_color,
-        href: href.clone(),
-        radius: 0.0,
-    });
+    out.push(v(ndc_min[0], ndc_min[1]));
+    out.push(v(ndc_max[0], ndc_min[1]));
+    out.push(v(ndc_max[0], ndc_max[1]));
 
-    // 左
-    out.push(DrawRect {
-        x,
-        y,
-        w: bw,
-        h,
-        color,
-        base_color,
-        href: href.clone(),
-        radius: 0.0,
-    });
-
-    // 右
-    out.push(DrawRect {
-        x: x + w - bw,
-        y,
-        w: bw,
-        h,
-        color,
-        base_color,
-        href,
-        radius: 0.0,
-    });
+    out.push(v(ndc_min[0], ndc_min[1]));
+    out.push(v(ndc_max[0], ndc_max[1]));
+    out.push(v(ndc_min[0], ndc_max[1]));
 }

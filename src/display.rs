@@ -1,4 +1,4 @@
-use crate::layout::{BoxType, LayoutBox};
+use crate::layout::{BoxType, CornerRadii, LayoutBox};
 use fontdue::Font;
 
 use crate::utility::url_utils::url_to_abs_string;
@@ -18,7 +18,7 @@ pub struct DrawRect {
     pub w: f32,
     pub h: f32,
 
-    pub radius: f32, // ★ 追加: border-radius 用
+    pub radius: CornerRadii,
 
     pub color: [f32; 4],
     pub base_color: [f32; 4], // hover解除で戻す用
@@ -32,7 +32,7 @@ pub struct DrawBorder {
     pub w: f32,
     pub h: f32,
 
-    pub radius: f32,       // 角丸枠用
+    pub radius: CornerRadii,
     pub border_width: f32, // とりあえず単一値
 
     pub color: [f32; 4],
@@ -95,7 +95,7 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
 
     // --------------------------------------------------------
     // inline element の background を padding込みで塗る
-    // （border-radius は一旦 0 扱い）
+    // （inline border は未対応なので背景だけ）
     // --------------------------------------------------------
     if matches!(node.box_type, BoxType::InlineNode(_)) {
         if let Some(sn) = node.get_style_node() {
@@ -115,7 +115,7 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
                                 y: bounds.y,
                                 w: bounds.width,
                                 h: bounds.height,
-                                radius: 0.0, // ★ inline 背景はひとまず角丸なし
+                                radius: CornerRadii::default(),
                                 color: bg,
                                 base_color: bg,
                                 href: None,
@@ -128,7 +128,7 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
     }
 
     // --------------------------------------------------------
-    // BlockNode の背景 + border
+    // BlockNode の背景 + border（border-radius 対応）
     // --------------------------------------------------------
     if matches!(node.box_type, BoxType::BlockNode(_)) {
         let d = &node.dimensions;
@@ -151,7 +151,9 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
 
         if border_box.width > 0.0 && border_box.height > 0.0 {
             if let Some(sn) = node.get_style_node() {
-                let radius = d.border_radius.max(0.0);
+                let radius = d
+                    .border_radius
+                    .normalize(border_box.width, border_box.height);
 
                 // 背景（background-color は border-box まで塗る）
                 if let Some(bg) = sn.background_color() {
@@ -160,7 +162,7 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
                         y: border_box.y,
                         w: border_box.width,
                         h: border_box.height,
-                        radius, // ★ 角丸背景！
+                        radius,
                         color: bg,
                         base_color: bg,
                         href: None,
@@ -176,10 +178,7 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
                     .max(d.border.bottom);
 
                 if border_width > 0.0 {
-                    // ★ style.rs 側で border_color() を実装しておく想定
-                    let border_color = sn
-                        .border_color()
-                        .unwrap_or([0.0, 0.0, 0.0, 1.0]); // デフォルト黒
+                    let border_color = sn.border_color().unwrap_or([0.0, 0.0, 0.0, 1.0]); // デフォルト黒
 
                     out.push(DisplayItem::Border(DrawBorder {
                         x: border_box.x,
@@ -268,7 +267,7 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
                                 y: underline_y,
                                 w: c.width.max(0.0),
                                 h: UNDERLINE_THICKNESS,
-                                radius: 0.0, // 下線は角丸なし
+                                radius: CornerRadii::default(),
                                 color,
                                 base_color,
                                 href: sn.link_href.clone(),
@@ -308,7 +307,6 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
                     let key = url_to_abs_string(&abs);
 
                     // 画像ロード可否を軽くチェック（失敗なら alt）
-                    // ここは image_loader.rs に `can_load_image` を追加しておく
                     if crate::image_loader::can_load_image(&key) {
                         out.push(DisplayItem::Image(DrawImage {
                             x: c.x,
@@ -357,7 +355,7 @@ fn line_height_px(sn: &crate::style::StyledNode, font_size: f32) -> f32 {
     font_size * 1.2
 }
 
-/// ★ &String / &str どっちでも受けられるようにして E0631 を潰す（Rustっぽく）
+/// &String / &str どっちでも受けられるように
 fn parse_px(s: impl AsRef<str>) -> Option<f32> {
     let t = s.as_ref().trim();
     t.strip_suffix("px")?.trim().parse::<f32>().ok()
