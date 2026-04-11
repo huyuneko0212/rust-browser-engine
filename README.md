@@ -128,13 +128,13 @@ URL を第 1 引数として渡して起動します。
 ### リモートページ
 
 ```bash
-cargo run -- https://example.com
+cargo run https://example.com
 ```
 
 ### ローカルファイル
 
 ```bash
-cargo run -- file:///D:/path/to/page.html
+cargo run file:///D:/path/to/page.html
 ```
 
 起動すると次のタイトルのネイティブウィンドウが開きます。
