@@ -50,6 +50,7 @@ pub mod color {
 pub mod display {
     pub const UNDERLINE_THICKNESS: f32 = 1.5;
     pub const UNDERLINE_GAP: f32 = 2.0;
+    pub const UNDERLINE_JOIN_MAX_GAP_PX: f32 = 16.0;
     pub const LIST_MARKER_OFFSET_EM: f32 = 1.1;
 }
 

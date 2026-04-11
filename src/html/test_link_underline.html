@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+<head>
+  <style>
+    body {
+      margin: 20px;
+      font-size: 18px;
+      line-height: 1.45;
+      color: #222;
+    }
+
+    h1 {
+      font-size: 24px;
+      margin: 0 0 18px 0;
+    }
+
+    p {
+      margin: 14px 0;
+    }
+
+    .case {
+      width: 520px;
+    }
+
+    .narrow {
+      width: 180px;
+    }
+
+    .label {
+      color: #666;
+      font-size: 14px;
+    }
+
+    .accent {
+      color: #0645ad;
+    }
+
+    a.no-underline {
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <h1>Link underline test</h1>
+
+  <p class="case">
+    <span class="label">One text node:</span>
+    <a href="https://example.com/one">Learn more</a>
+  </p>
+
+  <p class="case">
+    <span class="label">Nested inline fragments:</span>
+    <a href="https://example.com/nested">Learn <span class="accent">more</span> todayあｓｄふぁｆｄさｆｄｓｆだｆだｆｄさｆｄさｆｄさｆｄさｆだｓｆｄさｆｄさｆ</a>
+  </p>
+
+  <p class="case">
+    <span class="label">Separate anchors with the same href:</span>
+    <a href="https://example.com/same">first link</a>
+    <a href="https://example.com/same">second link</a>
+  </p>
+
+  <p class="narrow">
+    <span class="label">Wrapped link:</span>
+    <a href="https://example.com/wrap">This link should wrap onto multiple lines without one long underline across lines</a>
+  </p>
+
+  <p class="case">
+    <span class="label">No underline:</span>
+    <a class="no-underline" href="https://example.com/none">This link should not be underlined</a>
+  </p>
+</body>
+</html>

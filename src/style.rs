@@ -12,6 +12,7 @@ pub struct StyledNode {
     pub specified_values: HashMap<String, String>,
     pub children: Vec<StyledNode>,
     pub link_href: Option<String>,
+    pub link_id: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,11 +150,17 @@ fn ancestor_of(e: &ElementData) -> Ancestor {
 // ★ 継承するプロパティ（最小）
 // =========================================================
 
+const INHERITABLE_PROPS: &[&str] = &[
+    "color",
+    "font-size",
+    "font-family",
+    "font-weight",
+    "line-height",
+    "text-decoration",
+];
+
 fn is_inheritable_prop(name: &str) -> bool {
-    matches!(
-        name,
-        "color" | "font-size" | "font-family" | "font-weight" | "line-height" | "text-decoration"
-    )
+    INHERITABLE_PROPS.contains(&name)
 }
 
 fn inherit_only(values: &HashMap<String, String>) -> HashMap<String, String> {
@@ -169,15 +176,26 @@ fn inherit_only(values: &HashMap<String, String>) -> HashMap<String, String> {
 // =========================================================
 
 pub fn style_tree(root: Node, stylesheet: &Stylesheet) -> StyledNode {
-    style_tree_with_ctx(root, stylesheet, None, &Vec::new(), &HashMap::new())
+    let mut next_link_id = 1usize;
+    style_tree_with_ctx(
+        root,
+        stylesheet,
+        None,
+        None,
+        &Vec::new(),
+        &HashMap::new(),
+        &mut next_link_id,
+    )
 }
 
 fn style_tree_with_ctx(
     root: Node,
     stylesheet: &Stylesheet,
     inherited_link: Option<String>,
+    inherited_link_id: Option<usize>,
     ancestors: &Vec<Ancestor>,
     inherited_values: &HashMap<String, String>,
+    next_link_id: &mut usize,
 ) -> StyledNode {
     // まず継承値をベースにする（Textにも効く）
     let mut specified_values = inherited_values.clone();
@@ -192,6 +210,7 @@ fn style_tree_with_ctx(
 
     // link 継承（a の href を子孫テキストへ渡す）
     let mut link_here = inherited_link.clone();
+    let mut link_id_here = inherited_link_id;
     if let NodeType::Element(ref e) = root.node_type {
         if e.tag_name == "a" {
             if let Some(href) = e.attributes.get("href") {
@@ -202,6 +221,8 @@ fn style_tree_with_ctx(
                     && !h.to_lowercase().starts_with("data:")
                 {
                     link_here = Some(h.to_string());
+                    link_id_here = Some(*next_link_id);
+                    *next_link_id += 1;
                 }
             }
         }
@@ -225,8 +246,10 @@ fn style_tree_with_ctx(
                 c,
                 stylesheet,
                 link_here.clone(),
+                link_id_here,
                 &next_ancestors,
                 &next_inherited_values,
+                next_link_id,
             )
         })
         .collect();
@@ -236,6 +259,7 @@ fn style_tree_with_ctx(
         specified_values,
         children,
         link_href: link_here,
+        link_id: link_id_here,
     }
 }
 
@@ -252,8 +276,7 @@ fn specified_values_for(
     let mut matched: Vec<(Specificity, usize, &Rule)> = vec![];
 
     for (i, rule) in stylesheet.rules.iter().enumerate() {
-        if rule_matches(elem, rule, ancestors) {
-            let spec = rule_specificity(elem, rule, ancestors);
+        if let Some(spec) = matching_rule_specificity(elem, rule, ancestors) {
             matched.push((spec, i, rule));
         }
     }
@@ -270,18 +293,15 @@ fn specified_values_for(
     values
 }
 
-fn rule_matches(elem: &ElementData, rule: &Rule, ancestors: &[Ancestor]) -> bool {
-    rule.selectors
-        .iter()
-        .any(|sel| selector_matches_descendant(elem, ancestors, &sel.simple))
-}
-
-fn rule_specificity(elem: &ElementData, rule: &Rule, ancestors: &[Ancestor]) -> Specificity {
+fn matching_rule_specificity(
+    elem: &ElementData,
+    rule: &Rule,
+    ancestors: &[Ancestor],
+) -> Option<Specificity> {
     rule.selectors
         .iter()
         .filter_map(|sel| selector_specificity_if_matches(elem, ancestors, &sel.simple))
         .max()
-        .unwrap_or(Specificity(0, 0, 0))
 }
 
 fn selector_matches_descendant(elem: &ElementData, ancestors: &[Ancestor], selector: &str) -> bool {
@@ -458,11 +478,11 @@ fn parse_color(s: &str) -> Option<[f32; 4]> {
         if parts.len() < 3 {
             return None;
         }
-        let r = parts[0].parse::<f32>().ok()? / color::CHANNEL_MAX;
-        let g = parts[1].parse::<f32>().ok()? / color::CHANNEL_MAX;
-        let b = parts[2].parse::<f32>().ok()? / color::CHANNEL_MAX;
+        let r = parse_rgb_component(parts[0])?;
+        let g = parse_rgb_component(parts[1])?;
+        let b = parse_rgb_component(parts[2])?;
         let a = if parts.len() >= 4 {
-            parts[3].parse::<f32>().ok()?
+            parse_alpha(parts[3])?
         } else {
             color::OPAQUE_ALPHA
         };
@@ -478,5 +498,62 @@ fn parse_color(s: &str) -> Option<[f32; 4]> {
         "green" => Some(color::GREEN),
         "blue" => Some(color::BLUE),
         _ => None,
+    }
+}
+
+fn parse_rgb_component(s: &str) -> Option<f32> {
+    let t = s.trim();
+    let value = if let Some(percent) = t.strip_suffix('%') {
+        percent.trim().parse::<f32>().ok()? / 100.0
+    } else {
+        t.parse::<f32>().ok()? / color::CHANNEL_MAX
+    };
+    Some(value.clamp(0.0, 1.0))
+}
+
+fn parse_alpha(s: &str) -> Option<f32> {
+    let t = s.trim();
+    let value = if let Some(percent) = t.strip_suffix('%') {
+        percent.trim().parse::<f32>().ok()? / 100.0
+    } else {
+        t.parse::<f32>().ok()?
+    };
+    Some(value.clamp(0.0, 1.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rgba_alpha_uses_css_alpha_range() {
+        assert_eq!(
+            parse_color("rgba(0, 0, 255, 0.5)").unwrap(),
+            [0.0, 0.0, 1.0, 0.5]
+        );
+        assert_eq!(
+            parse_color("rgba(0, 0, 255, 128)").unwrap(),
+            [0.0, 0.0, 1.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn rgba_components_are_clamped_and_percentages_parse() {
+        assert_eq!(
+            parse_color("rgba(300, -10, 0, 150%)").unwrap(),
+            [1.0, 0.0, 0.0, 1.0]
+        );
+        assert_eq!(
+            parse_color("rgba(100%, 50%, 0%, -1)").unwrap(),
+            [1.0, 0.5, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn inheritable_properties_are_centralized() {
+        for prop in INHERITABLE_PROPS {
+            assert!(is_inheritable_prop(prop));
+        }
+        assert!(!is_inheritable_prop("background"));
     }
 }

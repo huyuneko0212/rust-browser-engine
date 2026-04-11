@@ -1,6 +1,7 @@
 use crate::constants::{color, display as display_constants, layout as layout_constants};
 use crate::layout::{BoxType, CornerRadii, LayoutBox};
 use fontdue::Font;
+use std::cmp::Ordering;
 
 use crate::utility::url_utils::url_to_abs_string;
 
@@ -24,6 +25,7 @@ pub struct DrawRect {
     pub color: [f32; 4],
     pub base_color: [f32; 4], // hover解除で戻す用
     pub href: Option<String>, // 下線だけリンクに紐付ける（背景はNone）
+    pub link_id: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +80,7 @@ pub fn build_display_list(
 ) {
     out.clear();
     walk(root, out, font, base_url);
+    merge_adjacent_link_underlines(out);
 }
 
 fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url: &crate::url::URL) {
@@ -117,6 +120,7 @@ fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url:
                                 color: bg,
                                 base_color: bg,
                                 href: None,
+                                link_id: None,
                             }));
                         }
                     }
@@ -164,6 +168,7 @@ fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url:
                         color: bg,
                         base_color: bg,
                         href: None,
+                        link_id: None,
                     }));
                 }
 
@@ -273,6 +278,7 @@ fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url:
                                     color,
                                     base_color,
                                     href: sn.link_href.clone(),
+                                    link_id: sn.link_id,
                                 }));
                             }
                         }
@@ -306,6 +312,7 @@ fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url:
                                     color,
                                     base_color,
                                     href: sn.link_href.clone(),
+                                    link_id: sn.link_id,
                                 }));
                             }
                         }
@@ -368,6 +375,175 @@ fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url:
 
     for child in &node.children {
         walk(child, out, font, base_url);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct UnderlineRun {
+    insert_at: usize,
+    rect: DrawRect,
+}
+
+fn merge_adjacent_link_underlines(items: &mut Vec<DisplayItem>) {
+    let mut underlines = Vec::<(usize, DrawRect)>::new();
+    let mut remove = vec![false; items.len()];
+
+    for (idx, item) in items.iter().enumerate() {
+        if let DisplayItem::Rect(rect) = item {
+            if rect.href.is_some() && rect.link_id.is_some() && rect.w > 0.0 && rect.h > 0.0 {
+                underlines.push((idx, rect.clone()));
+                remove[idx] = true;
+            }
+        }
+    }
+
+    if underlines.len() < 2 {
+        return;
+    }
+
+    underlines.sort_by(|a, b| compare_underlines(a, b));
+
+    let mut runs = Vec::<UnderlineRun>::new();
+    for (idx, rect) in underlines {
+        if let Some(last) = runs.last_mut() {
+            if can_join_underlines(&last.rect, &rect) {
+                let new_end = (last.rect.x + last.rect.w).max(rect.x + rect.w);
+                last.rect.x = last.rect.x.min(rect.x);
+                last.rect.w = new_end - last.rect.x;
+                last.insert_at = last.insert_at.min(idx);
+                continue;
+            }
+        }
+
+        runs.push(UnderlineRun {
+            insert_at: idx,
+            rect,
+        });
+    }
+
+    runs.sort_by_key(|run| run.insert_at);
+
+    let mut merged = Vec::with_capacity(items.len());
+    let mut runs = runs.into_iter().peekable();
+
+    for (idx, item) in items.drain(..).enumerate() {
+        while runs.peek().is_some_and(|run| run.insert_at == idx) {
+            let run = runs.next().unwrap();
+            merged.push(DisplayItem::Rect(run.rect));
+        }
+
+        if remove[idx] {
+            continue;
+        }
+
+        merged.push(item);
+    }
+
+    for run in runs {
+        merged.push(DisplayItem::Rect(run.rect));
+    }
+
+    *items = merged;
+}
+
+fn compare_underlines(a: &(usize, DrawRect), b: &(usize, DrawRect)) -> Ordering {
+    let (_, ar) = a;
+    let (_, br) = b;
+
+    ar.link_id
+        .cmp(&br.link_id)
+        .then_with(|| cmp_f32(ar.y, br.y))
+        .then_with(|| cmp_f32(ar.h, br.h))
+        .then_with(|| cmp_color(ar.color, br.color))
+        .then_with(|| cmp_color(ar.base_color, br.base_color))
+        .then_with(|| cmp_f32(ar.x, br.x))
+        .then_with(|| a.0.cmp(&b.0))
+}
+
+fn can_join_underlines(a: &DrawRect, b: &DrawRect) -> bool {
+    if a.link_id != b.link_id
+        || a.href != b.href
+        || a.color != b.color
+        || a.base_color != b.base_color
+    {
+        return false;
+    }
+
+    if !nearly_equal(a.y, b.y) || !nearly_equal(a.h, b.h) {
+        return false;
+    }
+
+    let gap = b.x - (a.x + a.w);
+    gap <= display_constants::UNDERLINE_JOIN_MAX_GAP_PX
+}
+
+fn cmp_f32(a: f32, b: f32) -> Ordering {
+    a.partial_cmp(&b).unwrap_or(Ordering::Equal)
+}
+
+fn cmp_color(a: [f32; 4], b: [f32; 4]) -> Ordering {
+    for (left, right) in a.into_iter().zip(b) {
+        let ord = cmp_f32(left, right);
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    Ordering::Equal
+}
+
+fn nearly_equal(a: f32, b: f32) -> bool {
+    (a - b).abs() <= 0.5
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn underline(x: f32, y: f32, w: f32, link_id: usize) -> DisplayItem {
+        let color = color::DEFAULT_LINK;
+        DisplayItem::Rect(DrawRect {
+            x,
+            y,
+            w,
+            h: display_constants::UNDERLINE_THICKNESS,
+            radius: CornerRadii::default(),
+            color,
+            base_color: color,
+            href: Some("https://example.com".to_string()),
+            link_id: Some(link_id),
+        })
+    }
+
+    #[test]
+    fn joins_same_link_underlines_on_same_line() {
+        let mut items = vec![
+            underline(10.0, 20.0, 30.0, 1),
+            underline(45.0, 20.0, 20.0, 1),
+        ];
+
+        merge_adjacent_link_underlines(&mut items);
+
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            DisplayItem::Rect(rect) => {
+                assert_eq!(rect.x, 10.0);
+                assert_eq!(rect.w, 55.0);
+            }
+            _ => panic!("expected merged underline rect"),
+        }
+    }
+
+    #[test]
+    fn keeps_different_lines_or_links_separate() {
+        let mut items = vec![
+            underline(10.0, 20.0, 30.0, 1),
+            underline(45.0, 40.0, 20.0, 1),
+            underline(70.0, 20.0, 20.0, 2),
+        ];
+
+        merge_adjacent_link_underlines(&mut items);
+
+        assert_eq!(items.len(), 3);
     }
 }
 
