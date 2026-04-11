@@ -110,11 +110,18 @@ pub enum BoxType {
     Anonymous, // anonymous block box (for inline formatting context)
 }
 
+#[derive(Debug, Clone)]
+pub struct TextFragment {
+    pub rect: Rect,
+    pub text: String,
+}
+
 #[derive(Debug)]
 pub struct LayoutBox {
     pub box_type: BoxType,
     pub dimensions: Dimensions,
     pub children: Vec<LayoutBox>,
+    pub text_fragments: Vec<TextFragment>,
 }
 
 impl LayoutBox {
@@ -123,6 +130,7 @@ impl LayoutBox {
             box_type,
             dimensions: Dimensions::default(),
             children: vec![],
+            text_fragments: vec![],
         }
     }
 
@@ -139,6 +147,8 @@ impl LayoutBox {
         font: &Font,
         img_cache: &dyn ImageSizeProvider,
     ) {
+        self.text_fragments.clear();
+
         match self.box_type {
             BoxType::BlockNode(_) => self.layout_block_with_font(containing_block, font, img_cache),
             BoxType::InlineNode(_) => {
@@ -190,19 +200,7 @@ impl LayoutBox {
             let lh = line_height_px(sn, fs);
 
             match &sn.node.node_type {
-                crate::dom::NodeType::Text(t) => {
-                    let s = t.trim();
-                    (
-                        fs,
-                        lh,
-                        if s.is_empty() {
-                            None
-                        } else {
-                            Some(s.to_string())
-                        },
-                        None,
-                    )
-                }
+                crate::dom::NodeType::Text(t) => (fs, lh, Some(t.clone()), None),
                 crate::dom::NodeType::Element(ed) if ed.tag_name == "img" => {
                     let (w, h) = img_intrinsic_size_px(sn, img_cache);
                     (fs, lh, None, Some((w, h)))
@@ -213,23 +211,42 @@ impl LayoutBox {
             (16.0, 16.0 * 1.2, None, None)
         };
 
-        let d = &mut self.dimensions;
-        d.content.x = containing_block.content.x;
-        d.content.y = containing_block.content.y;
-        d.content.width = containing_block.content.width.max(1.0);
-
-        if let Some(txt) = text_opt {
-            let w = measure_width_fontdue(font, &txt, font_size);
-            d.content.width = d.content.width.min(w.max(1.0));
-            d.content.height = line_h;
-        } else {
-            d.content.height = line_h;
-        }
-
         if let Some((iw, ih)) = img_opt {
+            let d = &mut self.dimensions;
+            d.content.x = containing_block.content.x;
+            d.content.y = containing_block.content.y;
             d.content.width = iw.max(1.0).min(containing_block.content.width.max(1.0));
             d.content.height = ih.max(1.0);
             return;
+        }
+
+        self.dimensions.content.x = containing_block.content.x;
+        self.dimensions.content.y = containing_block.content.y;
+        self.dimensions.content.width = containing_block.content.width.max(1.0);
+        self.dimensions.content.height = line_h;
+
+        if let Some(txt) = text_opt {
+            let start_x = containing_block.content.x;
+            let mut cursor_x = start_x;
+            let mut cursor_y = containing_block.content.y;
+            let mut current_line_h = 0.0;
+            let mut pending_space_w = 0.0;
+            let mut pending_space_h = 0.0;
+
+            layout_text_fragments(
+                self,
+                font,
+                &txt,
+                font_size,
+                line_h,
+                start_x,
+                containing_block.content.width.max(1.0),
+                &mut cursor_x,
+                &mut cursor_y,
+                &mut current_line_h,
+                &mut pending_space_w,
+                &mut pending_space_h,
+            );
         }
     }
 
@@ -631,6 +648,8 @@ impl LayoutBox {
         let mut cursor_x = start_x;
         let mut cursor_y = start_y;
         let mut current_line_h = 0.0f32;
+        let mut pending_space_w = 0.0f32;
+        let mut pending_space_h = 0.0f32;
 
         fn walk_inline(
             node: &mut LayoutBox,
@@ -641,7 +660,11 @@ impl LayoutBox {
             cursor_x: &mut f32,
             cursor_y: &mut f32,
             current_line_h: &mut f32,
+            pending_space_w: &mut f32,
+            pending_space_h: &mut f32,
         ) {
+            node.text_fragments.clear();
+
             match &mut node.box_type {
                 BoxType::InlineNode(_) => {
                     let (is_text, text, font_size, line_h, img_opt) =
@@ -652,11 +675,7 @@ impl LayoutBox {
                             match &sn.node.node_type {
                                 crate::dom::NodeType::Text(t) => {
                                     let collapsed = collapse_whitespace(t);
-                                    if collapsed.trim().is_empty() {
-                                        (true, Some(" ".to_string()), fs, lh, None)
-                                    } else {
-                                        (true, Some(collapsed.trim().to_string()), fs, lh, None)
-                                    }
+                                    (true, Some(collapsed), fs, lh, None)
                                 }
                                 crate::dom::NodeType::Element(ed) if ed.tag_name == "img" => {
                                     let (w, h) = img_intrinsic_size_px(sn, img_cache);
@@ -672,10 +691,19 @@ impl LayoutBox {
                         let iw = iw.max(1.0);
                         let ih = ih.max(1.0);
 
+                        consume_pending_space_before_item(
+                            iw,
+                            start_x,
+                            max_w,
+                            cursor_x,
+                            cursor_y,
+                            current_line_h,
+                            pending_space_w,
+                            pending_space_h,
+                        );
+
                         if *cursor_x > start_x && *cursor_x + iw > start_x + max_w {
-                            *cursor_x = start_x;
-                            *cursor_y += (*current_line_h).max(ih);
-                            *current_line_h = 0.0;
+                            advance_to_next_line(cursor_x, cursor_y, current_line_h, start_x, ih);
                         }
 
                         node.dimensions.content.x = *cursor_x;
@@ -690,46 +718,20 @@ impl LayoutBox {
 
                     if is_text {
                         if let Some(txt) = text {
-                            let is_space_only = txt == " ";
-
-                            if is_space_only && (*cursor_x == start_x) {
-                                node.dimensions.content.x = *cursor_x;
-                                node.dimensions.content.y = *cursor_y;
-                                node.dimensions.content.width = 0.0;
-                                node.dimensions.content.height = 0.0;
-                                return;
-                            }
-
-                            let w = measure_width_fontdue(font, &txt, font_size);
-                            let h = line_h;
-
-                            if !is_space_only
-                                && *cursor_x > start_x
-                                && *cursor_x + w > start_x + max_w
-                            {
-                                *cursor_x = start_x;
-                                *cursor_y += (*current_line_h).max(h);
-                                *current_line_h = 0.0;
-                            }
-
-                            if is_space_only {
-                                node.dimensions.content.x = *cursor_x;
-                                node.dimensions.content.y = *cursor_y;
-                                node.dimensions.content.width = 0.0;
-                                node.dimensions.content.height = 0.0;
-
-                                *cursor_x += w;
-                                *current_line_h = (*current_line_h).max(h);
-                                return;
-                            }
-
-                            node.dimensions.content.x = *cursor_x;
-                            node.dimensions.content.y = *cursor_y;
-                            node.dimensions.content.width = w.max(0.0);
-                            node.dimensions.content.height = h;
-
-                            *cursor_x += w;
-                            *current_line_h = (*current_line_h).max(h);
+                            layout_text_fragments(
+                                node,
+                                font,
+                                &txt,
+                                font_size,
+                                line_h,
+                                start_x,
+                                max_w,
+                                cursor_x,
+                                cursor_y,
+                                current_line_h,
+                                pending_space_w,
+                                pending_space_h,
+                            );
                         } else {
                             node.dimensions.content.width = 0.0;
                             node.dimensions.content.height = 0.0;
@@ -747,6 +749,8 @@ impl LayoutBox {
                                 cursor_x,
                                 cursor_y,
                                 current_line_h,
+                                pending_space_w,
+                                pending_space_h,
                             );
                         }
                         node.dimensions.content.width = 0.0;
@@ -756,10 +760,11 @@ impl LayoutBox {
                     }
                 }
                 BoxType::BlockNode(_) | BoxType::Anonymous => {
+                    *pending_space_w = 0.0;
+                    *pending_space_h = 0.0;
+
                     if *cursor_x > start_x {
-                        *cursor_x = start_x;
-                        *cursor_y += (*current_line_h).max(18.0);
-                        *current_line_h = 0.0;
+                        advance_to_next_line(cursor_x, cursor_y, current_line_h, start_x, 18.0);
                     }
                     let mut cb = Dimensions::default();
                     cb.content.x = start_x;
@@ -783,6 +788,8 @@ impl LayoutBox {
                 &mut cursor_x,
                 &mut cursor_y,
                 &mut current_line_h,
+                &mut pending_space_w,
+                &mut pending_space_h,
             );
         }
 
@@ -1099,6 +1106,275 @@ fn collect_text_nodes(sn: &StyledNode, out: &mut String) {
     for c in &sn.children {
         collect_text_nodes(c, out);
     }
+}
+
+fn layout_text_fragments(
+    node: &mut LayoutBox,
+    font: &Font,
+    text: &str,
+    font_size: f32,
+    line_h: f32,
+    start_x: f32,
+    max_w: f32,
+    cursor_x: &mut f32,
+    cursor_y: &mut f32,
+    current_line_h: &mut f32,
+    pending_space_w: &mut f32,
+    pending_space_h: &mut f32,
+) {
+    node.text_fragments.clear();
+
+    let collapsed = collapse_whitespace(text);
+    let space_w = measure_width_fontdue(font, " ", font_size);
+    let mut word = String::new();
+
+    for ch in collapsed.chars() {
+        if ch == ' ' {
+            push_inline_word(
+                node,
+                font,
+                &word,
+                font_size,
+                line_h,
+                start_x,
+                max_w,
+                cursor_x,
+                cursor_y,
+                current_line_h,
+                pending_space_w,
+                pending_space_h,
+            );
+            word.clear();
+
+            *pending_space_w = space_w;
+            *pending_space_h = line_h;
+        } else {
+            word.push(ch);
+        }
+    }
+
+    push_inline_word(
+        node,
+        font,
+        &word,
+        font_size,
+        line_h,
+        start_x,
+        max_w,
+        cursor_x,
+        cursor_y,
+        current_line_h,
+        pending_space_w,
+        pending_space_h,
+    );
+
+    set_text_content_rect(node, *cursor_x, *cursor_y);
+}
+
+fn push_inline_word(
+    node: &mut LayoutBox,
+    font: &Font,
+    word: &str,
+    font_size: f32,
+    line_h: f32,
+    start_x: f32,
+    max_w: f32,
+    cursor_x: &mut f32,
+    cursor_y: &mut f32,
+    current_line_h: &mut f32,
+    pending_space_w: &mut f32,
+    pending_space_h: &mut f32,
+) {
+    if word.is_empty() {
+        return;
+    }
+
+    let line_end = start_x + max_w;
+    let word_w = measure_width_fontdue(font, word, font_size);
+
+    consume_pending_space_before_item(
+        word_w,
+        start_x,
+        max_w,
+        cursor_x,
+        cursor_y,
+        current_line_h,
+        pending_space_w,
+        pending_space_h,
+    );
+
+    if word_w <= max_w {
+        if *cursor_x > start_x && *cursor_x + word_w > line_end {
+            advance_to_next_line(cursor_x, cursor_y, current_line_h, start_x, line_h);
+        }
+
+        push_text_fragment(
+            node,
+            word,
+            word_w,
+            line_h,
+            cursor_x,
+            cursor_y,
+            current_line_h,
+        );
+        return;
+    }
+
+    let mut part = String::new();
+    let mut part_w = 0.0f32;
+
+    for ch in word.chars() {
+        let ch_s = ch.to_string();
+        let ch_w = measure_width_fontdue(font, &ch_s, font_size);
+
+        if !part.is_empty() && *cursor_x + part_w + ch_w > line_end {
+            push_text_fragment(
+                node,
+                &part,
+                part_w,
+                line_h,
+                cursor_x,
+                cursor_y,
+                current_line_h,
+            );
+            advance_to_next_line(cursor_x, cursor_y, current_line_h, start_x, line_h);
+            part.clear();
+            part_w = 0.0;
+        }
+
+        if part.is_empty() && *cursor_x > start_x && *cursor_x + ch_w > line_end {
+            advance_to_next_line(cursor_x, cursor_y, current_line_h, start_x, line_h);
+        }
+
+        if part.is_empty() && ch_w > max_w {
+            push_text_fragment(
+                node,
+                &ch_s,
+                ch_w,
+                line_h,
+                cursor_x,
+                cursor_y,
+                current_line_h,
+            );
+        } else {
+            part.push(ch);
+            part_w += ch_w;
+        }
+    }
+
+    if !part.is_empty() {
+        push_text_fragment(
+            node,
+            &part,
+            part_w,
+            line_h,
+            cursor_x,
+            cursor_y,
+            current_line_h,
+        );
+    }
+}
+
+fn consume_pending_space_before_item(
+    item_w: f32,
+    start_x: f32,
+    max_w: f32,
+    cursor_x: &mut f32,
+    cursor_y: &mut f32,
+    current_line_h: &mut f32,
+    pending_space_w: &mut f32,
+    pending_space_h: &mut f32,
+) {
+    if *pending_space_w <= 0.0 {
+        return;
+    }
+
+    if *cursor_x <= start_x {
+        *pending_space_w = 0.0;
+        *pending_space_h = 0.0;
+        return;
+    }
+
+    if *cursor_x + *pending_space_w + item_w <= start_x + max_w {
+        *cursor_x += *pending_space_w;
+        *current_line_h = (*current_line_h).max(*pending_space_h);
+    } else {
+        advance_to_next_line(
+            cursor_x,
+            cursor_y,
+            current_line_h,
+            start_x,
+            *pending_space_h,
+        );
+    }
+
+    *pending_space_w = 0.0;
+    *pending_space_h = 0.0;
+}
+
+fn advance_to_next_line(
+    cursor_x: &mut f32,
+    cursor_y: &mut f32,
+    current_line_h: &mut f32,
+    start_x: f32,
+    min_line_h: f32,
+) {
+    *cursor_x = start_x;
+    *cursor_y += (*current_line_h).max(min_line_h);
+    *current_line_h = 0.0;
+}
+
+fn push_text_fragment(
+    node: &mut LayoutBox,
+    text: &str,
+    width: f32,
+    line_h: f32,
+    cursor_x: &mut f32,
+    cursor_y: &mut f32,
+    current_line_h: &mut f32,
+) {
+    if !text.is_empty() && width > 0.0 {
+        node.text_fragments.push(TextFragment {
+            rect: Rect {
+                x: *cursor_x,
+                y: *cursor_y,
+                width,
+                height: line_h,
+            },
+            text: text.to_string(),
+        });
+    }
+
+    *cursor_x += width;
+    *current_line_h = (*current_line_h).max(line_h);
+}
+
+fn set_text_content_rect(node: &mut LayoutBox, fallback_x: f32, fallback_y: f32) {
+    if node.text_fragments.is_empty() {
+        node.dimensions.content.x = fallback_x;
+        node.dimensions.content.y = fallback_y;
+        node.dimensions.content.width = 0.0;
+        node.dimensions.content.height = 0.0;
+        return;
+    }
+
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+
+    for frag in &node.text_fragments {
+        let r = &frag.rect;
+        min_x = min_x.min(r.x);
+        min_y = min_y.min(r.y);
+        max_x = max_x.max(r.x + r.width);
+        max_y = max_y.max(r.y + r.height);
+    }
+
+    node.dimensions.content.x = min_x;
+    node.dimensions.content.y = min_y;
+    node.dimensions.content.width = (max_x - min_x).max(0.0);
+    node.dimensions.content.height = (max_y - min_y).max(0.0);
 }
 
 /// fontdue実測で「折り返し行数」だけ返す

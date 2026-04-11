@@ -237,41 +237,75 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
                 let txt = collapsed.trim();
 
                 if !txt.is_empty() && txt != " " {
-                    let c = &node.dimensions.content;
-                    if c.width > 0.0 && c.height > 0.0 {
-                        let is_link = sn.link_href.is_some();
-                        let font_size = font_size_px(sn).unwrap_or(16.0);
+                    let is_link = sn.link_href.is_some();
+                    let font_size = font_size_px(sn).unwrap_or(16.0);
 
-                        let mut color = sn.color().unwrap_or([0.1, 0.1, 0.12, 1.0]);
-                        if is_link && sn.value("color").is_none() {
-                            color = [0.0, 0.35, 0.95, 1.0];
-                        }
-                        let base_color = color;
+                    let mut color = sn.color().unwrap_or([0.1, 0.1, 0.12, 1.0]);
+                    if is_link && sn.value("color").is_none() {
+                        color = [0.0, 0.35, 0.95, 1.0];
+                    }
+                    let base_color = color;
+                    let underline_allowed = is_link && !text_decoration_none(sn);
 
-                        out.push(DisplayItem::Text(DrawText {
-                            x: c.x,
-                            y: c.y + font_size,
-                            text: txt.to_string(),
-                            size_px: font_size,
-                            color,
-                            base_color,
-                            href: sn.link_href.clone(),
-                            hit: c.clone(),
-                        }));
-
-                        let underline_allowed = is_link && !text_decoration_none(sn);
-                        if underline_allowed {
-                            let underline_y = c.y + font_size + UNDERLINE_GAP;
-                            out.push(DisplayItem::Rect(DrawRect {
+                    if node.text_fragments.is_empty() {
+                        let c = &node.dimensions.content;
+                        if c.width > 0.0 && c.height > 0.0 {
+                            out.push(DisplayItem::Text(DrawText {
                                 x: c.x,
-                                y: underline_y,
-                                w: c.width.max(0.0),
-                                h: UNDERLINE_THICKNESS,
-                                radius: CornerRadii::default(),
+                                y: c.y + font_size,
+                                text: txt.to_string(),
+                                size_px: font_size,
                                 color,
                                 base_color,
                                 href: sn.link_href.clone(),
+                                hit: c.clone(),
                             }));
+
+                            if underline_allowed {
+                                let underline_y = c.y + font_size + UNDERLINE_GAP;
+                                out.push(DisplayItem::Rect(DrawRect {
+                                    x: c.x,
+                                    y: underline_y,
+                                    w: c.width.max(0.0),
+                                    h: UNDERLINE_THICKNESS,
+                                    radius: CornerRadii::default(),
+                                    color,
+                                    base_color,
+                                    href: sn.link_href.clone(),
+                                }));
+                            }
+                        }
+                    } else {
+                        for frag in &node.text_fragments {
+                            let c = &frag.rect;
+                            if c.width <= 0.0 || c.height <= 0.0 {
+                                continue;
+                            }
+
+                            out.push(DisplayItem::Text(DrawText {
+                                x: c.x,
+                                y: c.y + font_size,
+                                text: frag.text.clone(),
+                                size_px: font_size,
+                                color,
+                                base_color,
+                                href: sn.link_href.clone(),
+                                hit: c.clone(),
+                            }));
+
+                            if underline_allowed {
+                                let underline_y = c.y + font_size + UNDERLINE_GAP;
+                                out.push(DisplayItem::Rect(DrawRect {
+                                    x: c.x,
+                                    y: underline_y,
+                                    w: c.width.max(0.0),
+                                    h: UNDERLINE_THICKNESS,
+                                    radius: CornerRadii::default(),
+                                    color,
+                                    base_color,
+                                    href: sn.link_href.clone(),
+                                }));
+                            }
                         }
                     }
                 }
@@ -419,13 +453,26 @@ fn collect_descendant_text_bounds_rec(
     for ch in &node.children {
         if let Some(sn) = ch.get_style_node() {
             if matches!(sn.node.node_type, crate::dom::NodeType::Text(_)) {
-                let c = &ch.dimensions.content;
-                if c.width > 0.0 && c.height > 0.0 {
-                    *min_x = (*min_x).min(c.x);
-                    *min_y = (*min_y).min(c.y);
-                    *max_x = (*max_x).max(c.x + c.width);
-                    *max_y = (*max_y).max(c.y + c.height);
-                    *any = true;
+                if ch.text_fragments.is_empty() {
+                    let c = &ch.dimensions.content;
+                    if c.width > 0.0 && c.height > 0.0 {
+                        *min_x = (*min_x).min(c.x);
+                        *min_y = (*min_y).min(c.y);
+                        *max_x = (*max_x).max(c.x + c.width);
+                        *max_y = (*max_y).max(c.y + c.height);
+                        *any = true;
+                    }
+                } else {
+                    for frag in &ch.text_fragments {
+                        let c = &frag.rect;
+                        if c.width > 0.0 && c.height > 0.0 {
+                            *min_x = (*min_x).min(c.x);
+                            *min_y = (*min_y).min(c.y);
+                            *max_x = (*max_x).max(c.x + c.width);
+                            *max_y = (*max_y).max(c.y + c.height);
+                            *any = true;
+                        }
+                    }
                 }
             }
         }
