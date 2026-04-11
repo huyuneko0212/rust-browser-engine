@@ -104,10 +104,10 @@ impl Dimensions {
     }
 }
 
-#[derive(Debug)]
-pub enum BoxType {
-    BlockNode(StyledNode),
-    InlineNode(StyledNode),
+#[derive(Debug, Clone, Copy)]
+pub enum BoxType<'a> {
+    BlockNode(&'a StyledNode),
+    InlineNode(&'a StyledNode),
     Anonymous, // anonymous block box (for inline formatting context)
 }
 
@@ -118,15 +118,15 @@ pub struct TextFragment {
 }
 
 #[derive(Debug)]
-pub struct LayoutBox {
-    pub box_type: BoxType,
+pub struct LayoutBox<'a> {
+    pub box_type: BoxType<'a>,
     pub dimensions: Dimensions,
-    pub children: Vec<LayoutBox>,
+    pub children: Vec<LayoutBox<'a>>,
     pub text_fragments: Vec<TextFragment>,
 }
 
-impl LayoutBox {
-    pub fn new(box_type: BoxType) -> Self {
+impl<'a> LayoutBox<'a> {
+    pub fn new(box_type: BoxType<'a>) -> Self {
         Self {
             box_type,
             dimensions: Dimensions::default(),
@@ -136,7 +136,7 @@ impl LayoutBox {
     }
 
     pub fn get_style_node(&self) -> Option<&StyledNode> {
-        match &self.box_type {
+        match self.box_type {
             BoxType::BlockNode(node) | BoxType::InlineNode(node) => Some(node),
             BoxType::Anonymous => None,
         }
@@ -693,8 +693,8 @@ impl LayoutBox {
         let mut pending_space_w = 0.0f32;
         let mut pending_space_h = 0.0f32;
 
-        fn walk_inline(
-            node: &mut LayoutBox,
+        fn walk_inline<'a>(
+            node: &mut LayoutBox<'a>,
             font: &Font,
             img_cache: &dyn ImageSizeProvider,
             start_x: f32,
@@ -854,15 +854,15 @@ impl LayoutBox {
     }
 }
 
-pub fn build_layout_tree(style_node: StyledNode) -> LayoutBox {
+pub fn build_layout_tree(style_node: &StyledNode) -> LayoutBox<'_> {
     // browser.engineering 的に
     // - block の子: block はそのまま
     // - inline の連続: Anonymous block box にまとめて、その中に inline を入れる
     let display = style_node.display();
 
     let mut root = LayoutBox::new(match display {
-        Display::Block => BoxType::BlockNode(style_node.clone()),
-        Display::Inline => BoxType::InlineNode(style_node.clone()),
+        Display::Block => BoxType::BlockNode(style_node),
+        Display::Inline => BoxType::InlineNode(style_node),
         Display::None => BoxType::Anonymous,
     });
 
@@ -872,9 +872,9 @@ pub fn build_layout_tree(style_node: StyledNode) -> LayoutBox {
     }
 
     // 子をグルーピング
-    let mut anon: Option<LayoutBox> = None;
+    let mut anon: Option<LayoutBox<'_>> = None;
 
-    for child in style_node.children {
+    for child in &style_node.children {
         match child.display() {
             Display::None => {}
             Display::Block => {
@@ -1186,7 +1186,7 @@ fn collect_text_nodes(sn: &StyledNode, out: &mut String) {
 }
 
 fn layout_text_fragments(
-    node: &mut LayoutBox,
+    node: &mut LayoutBox<'_>,
     font: &Font,
     text: &str,
     font_size: f32,
@@ -1249,7 +1249,7 @@ fn layout_text_fragments(
 }
 
 fn push_inline_word(
-    node: &mut LayoutBox,
+    node: &mut LayoutBox<'_>,
     font: &Font,
     word: &str,
     font_size: f32,
@@ -1402,7 +1402,7 @@ fn advance_to_next_line(
 }
 
 fn push_text_fragment(
-    node: &mut LayoutBox,
+    node: &mut LayoutBox<'_>,
     text: &str,
     width: f32,
     line_h: f32,
@@ -1426,7 +1426,7 @@ fn push_text_fragment(
     *current_line_h = (*current_line_h).max(line_h);
 }
 
-fn set_text_content_rect(node: &mut LayoutBox, fallback_x: f32, fallback_y: f32) {
+fn set_text_content_rect(node: &mut LayoutBox<'_>, fallback_x: f32, fallback_y: f32) {
     if node.text_fragments.is_empty() {
         node.dimensions.content.x = fallback_x;
         node.dimensions.content.y = fallback_y;

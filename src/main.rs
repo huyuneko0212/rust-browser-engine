@@ -423,7 +423,7 @@ fn build_display_list_for_viewport(
     viewport_height: f32,
     font: &fontdue::Font,
 ) -> Vec<DisplayItem> {
-    let mut layout_root = layout::build_layout_tree(page.styled_root.clone());
+    let mut layout_root = layout::build_layout_tree(&page.styled_root);
     let mut viewport = layout::Dimensions::default();
     viewport.content.width = viewport_width;
     viewport.content.height = viewport_height;

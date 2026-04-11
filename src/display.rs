@@ -71,7 +71,7 @@ pub struct DrawImage {
 
 /// base_url を受け取って、画像 src を正規化できるようにする
 pub fn build_display_list(
-    root: &LayoutBox,
+    root: &LayoutBox<'_>,
     out: &mut Vec<DisplayItem>,
     font: &Font,
     base_url: &crate::url::URL,
@@ -80,7 +80,7 @@ pub fn build_display_list(
     walk(root, out, font, base_url);
 }
 
-fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &crate::url::URL) {
+fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url: &crate::url::URL) {
     // style/script/head/title/meta/link は描画しない（配下も止める）
     if let Some(sn) = node.get_style_node() {
         if let crate::dom::NodeType::Element(ed) = &sn.node.node_type {
@@ -425,7 +425,7 @@ fn collapse_whitespace(s: &str) -> String {
 // inline背景のための helper
 // --------------------------------------------------------
 
-fn collect_descendant_text_bounds(node: &LayoutBox) -> Option<crate::layout::Rect> {
+fn collect_descendant_text_bounds(node: &LayoutBox<'_>) -> Option<crate::layout::Rect> {
     let mut min_x = f32::INFINITY;
     let mut min_y = f32::INFINITY;
     let mut max_x = f32::NEG_INFINITY;
@@ -445,7 +445,7 @@ fn collect_descendant_text_bounds(node: &LayoutBox) -> Option<crate::layout::Rec
 }
 
 fn collect_descendant_text_bounds_rec(
-    node: &LayoutBox,
+    node: &LayoutBox<'_>,
     min_x: &mut f32,
     min_y: &mut f32,
     max_x: &mut f32,
