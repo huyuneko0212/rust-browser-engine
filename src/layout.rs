@@ -1,3 +1,4 @@
+use crate::constants::layout as layout_constants;
 use crate::style::{Display, StyledNode};
 use fontdue::Font;
 
@@ -196,7 +197,7 @@ impl LayoutBox {
         img_cache: &dyn ImageSizeProvider,
     ) {
         let (font_size, line_h, text_opt, img_opt) = if let Some(sn) = self.get_style_node() {
-            let fs = font_size_px(sn).unwrap_or(16.0);
+            let fs = font_size_px(sn).unwrap_or(layout_constants::DEFAULT_FONT_SIZE_PX);
             let lh = line_height_px(sn, fs);
 
             match &sn.node.node_type {
@@ -208,21 +209,35 @@ impl LayoutBox {
                 _ => (fs, lh, None, None),
             }
         } else {
-            (16.0, 16.0 * 1.2, None, None)
+            (
+                layout_constants::DEFAULT_FONT_SIZE_PX,
+                layout_constants::DEFAULT_FONT_SIZE_PX
+                    * layout_constants::DEFAULT_LINE_HEIGHT_MULTIPLIER,
+                None,
+                None,
+            )
         };
 
         if let Some((iw, ih)) = img_opt {
             let d = &mut self.dimensions;
             d.content.x = containing_block.content.x;
             d.content.y = containing_block.content.y;
-            d.content.width = iw.max(1.0).min(containing_block.content.width.max(1.0));
-            d.content.height = ih.max(1.0);
+            d.content.width = iw.max(layout_constants::MIN_LAYOUT_SIZE_PX).min(
+                containing_block
+                    .content
+                    .width
+                    .max(layout_constants::MIN_LAYOUT_SIZE_PX),
+            );
+            d.content.height = ih.max(layout_constants::MIN_LAYOUT_SIZE_PX);
             return;
         }
 
         self.dimensions.content.x = containing_block.content.x;
         self.dimensions.content.y = containing_block.content.y;
-        self.dimensions.content.width = containing_block.content.width.max(1.0);
+        self.dimensions.content.width = containing_block
+            .content
+            .width
+            .max(layout_constants::MIN_LAYOUT_SIZE_PX);
         self.dimensions.content.height = line_h;
 
         if let Some(txt) = text_opt {
@@ -240,7 +255,10 @@ impl LayoutBox {
                 font_size,
                 line_h,
                 start_x,
-                containing_block.content.width.max(1.0),
+                containing_block
+                    .content
+                    .width
+                    .max(layout_constants::MIN_LAYOUT_SIZE_PX),
                 &mut cursor_x,
                 &mut cursor_y,
                 &mut current_line_h,
@@ -253,7 +271,10 @@ impl LayoutBox {
     /// margin/padding/border/border-radius を style から読む
     fn calculate_block_model(&mut self, containing: Dimensions) {
         let viewport_w = containing.content.width;
-        let viewport_h = containing.content.height.max(1.0);
+        let viewport_h = containing
+            .content
+            .height
+            .max(layout_constants::MIN_LAYOUT_SIZE_PX);
         let parent_w = containing.content.width;
 
         let (
@@ -487,7 +508,10 @@ impl LayoutBox {
 
     fn calculate_block_width(&mut self, containing_block: Dimensions) {
         let viewport_w = containing_block.content.width;
-        let viewport_h = containing_block.content.height.max(1.0);
+        let viewport_h = containing_block
+            .content
+            .height
+            .max(layout_constants::MIN_LAYOUT_SIZE_PX);
         let parent_w = containing_block.content.width;
 
         let width_str = self
@@ -581,7 +605,11 @@ impl LayoutBox {
             cb.content.x = self.dimensions.content.x;
             cb.content.y = y;
             cb.content.width = self.dimensions.content.width;
-            cb.content.height = self.dimensions.content.height.max(1.0);
+            cb.content.height = self
+                .dimensions
+                .content
+                .height
+                .max(layout_constants::MIN_LAYOUT_SIZE_PX);
 
             child.layout_with_font(cb, font, img_cache);
 
@@ -593,13 +621,17 @@ impl LayoutBox {
 
     fn calculate_block_height_with_font(&mut self, font: &Font, img_cache: &dyn ImageSizeProvider) {
         let (h_str, viewport_w, viewport_h, parent_w) = {
-            let vw = self.dimensions.content.width.max(1.0);
+            let vw = self
+                .dimensions
+                .content
+                .width
+                .max(layout_constants::MIN_LAYOUT_SIZE_PX);
             (
                 self.get_style_node()
                     .and_then(|s| s.value("height"))
                     .cloned(),
                 vw,
-                600.0,
+                layout_constants::DEFAULT_VIEWPORT_HEIGHT_PX,
                 vw,
             )
         };
@@ -617,7 +649,8 @@ impl LayoutBox {
                 if let crate::dom::NodeType::Element(ed) = &sn.node.node_type {
                     if ed.tag_name == "img" {
                         let (_iw, ih) = img_intrinsic_size_px(sn, img_cache);
-                        self.dimensions.content.height = ih.max(1.0);
+                        self.dimensions.content.height =
+                            ih.max(layout_constants::MIN_LAYOUT_SIZE_PX);
                         return;
                     }
                 }
@@ -627,9 +660,14 @@ impl LayoutBox {
 
                 let txt = buf.trim();
                 if !txt.is_empty() {
-                    let font_size = font_size_px(sn).unwrap_or(16.0);
+                    let font_size =
+                        font_size_px(sn).unwrap_or(layout_constants::DEFAULT_FONT_SIZE_PX);
                     let line_h = line_height_px(sn, font_size);
-                    let max_w = self.dimensions.content.width.max(1.0);
+                    let max_w = self
+                        .dimensions
+                        .content
+                        .width
+                        .max(layout_constants::MIN_LAYOUT_SIZE_PX);
 
                     let lines = count_lines_fontdue(font, txt, max_w, font_size).max(1);
                     let text_h = (lines as f32) * line_h;
@@ -643,7 +681,11 @@ impl LayoutBox {
     fn layout_inline_formatting_context(&mut self, font: &Font, img_cache: &dyn ImageSizeProvider) {
         let start_x = self.dimensions.content.x;
         let start_y = self.dimensions.content.y;
-        let max_w = self.dimensions.content.width.max(1.0);
+        let max_w = self
+            .dimensions
+            .content
+            .width
+            .max(layout_constants::MIN_LAYOUT_SIZE_PX);
 
         let mut cursor_x = start_x;
         let mut cursor_y = start_y;
@@ -667,29 +709,37 @@ impl LayoutBox {
 
             match &mut node.box_type {
                 BoxType::InlineNode(_) => {
-                    let (is_text, text, font_size, line_h, img_opt) =
-                        if let Some(sn) = node.get_style_node() {
-                            let fs = font_size_px(sn).unwrap_or(16.0);
-                            let lh = line_height_px(sn, fs);
+                    let (is_text, text, font_size, line_h, img_opt) = if let Some(sn) =
+                        node.get_style_node()
+                    {
+                        let fs = font_size_px(sn).unwrap_or(layout_constants::DEFAULT_FONT_SIZE_PX);
+                        let lh = line_height_px(sn, fs);
 
-                            match &sn.node.node_type {
-                                crate::dom::NodeType::Text(t) => {
-                                    let collapsed = collapse_whitespace(t);
-                                    (true, Some(collapsed), fs, lh, None)
-                                }
-                                crate::dom::NodeType::Element(ed) if ed.tag_name == "img" => {
-                                    let (w, h) = img_intrinsic_size_px(sn, img_cache);
-                                    (false, None, fs, lh, Some((w, h)))
-                                }
-                                _ => (false, None, fs, lh, None),
+                        match &sn.node.node_type {
+                            crate::dom::NodeType::Text(t) => {
+                                let collapsed = collapse_whitespace(t);
+                                (true, Some(collapsed), fs, lh, None)
                             }
-                        } else {
-                            (false, None, 16.0, 16.0 * 1.2, None)
-                        };
+                            crate::dom::NodeType::Element(ed) if ed.tag_name == "img" => {
+                                let (w, h) = img_intrinsic_size_px(sn, img_cache);
+                                (false, None, fs, lh, Some((w, h)))
+                            }
+                            _ => (false, None, fs, lh, None),
+                        }
+                    } else {
+                        (
+                            false,
+                            None,
+                            layout_constants::DEFAULT_FONT_SIZE_PX,
+                            layout_constants::DEFAULT_FONT_SIZE_PX
+                                * layout_constants::DEFAULT_LINE_HEIGHT_MULTIPLIER,
+                            None,
+                        )
+                    };
 
                     if let Some((iw, ih)) = img_opt {
-                        let iw = iw.max(1.0);
-                        let ih = ih.max(1.0);
+                        let iw = iw.max(layout_constants::MIN_LAYOUT_SIZE_PX);
+                        let ih = ih.max(layout_constants::MIN_LAYOUT_SIZE_PX);
 
                         consume_pending_space_before_item(
                             iw,
@@ -764,13 +814,19 @@ impl LayoutBox {
                     *pending_space_h = 0.0;
 
                     if *cursor_x > start_x {
-                        advance_to_next_line(cursor_x, cursor_y, current_line_h, start_x, 18.0);
+                        advance_to_next_line(
+                            cursor_x,
+                            cursor_y,
+                            current_line_h,
+                            start_x,
+                            layout_constants::MIN_LINE_HEIGHT_PX,
+                        );
                     }
                     let mut cb = Dimensions::default();
                     cb.content.x = start_x;
                     cb.content.y = *cursor_y;
                     cb.content.width = max_w;
-                    cb.content.height = 1.0;
+                    cb.content.height = layout_constants::MIN_LAYOUT_SIZE_PX;
 
                     node.layout_with_font(cb, font, img_cache);
                     *cursor_y += node.dimensions.margin_box_height().max(0.0);
@@ -857,15 +913,15 @@ fn parse_length(s: &str, containing: f32, viewport_w: f32, viewport_h: f32) -> O
     }
     if t.ends_with("vw") {
         let v: f32 = t.trim_end_matches("vw").trim().parse().ok()?;
-        return Some(viewport_w * (v / 100.0));
+        return Some(viewport_w * (v / layout_constants::PERCENT_DENOMINATOR));
     }
     if t.ends_with("vh") {
         let v: f32 = t.trim_end_matches("vh").trim().parse().ok()?;
-        return Some(viewport_h * (v / 100.0));
+        return Some(viewport_h * (v / layout_constants::PERCENT_DENOMINATOR));
     }
     if t.ends_with('%') {
         let v: f32 = t.trim_end_matches('%').trim().parse().ok()?;
-        return Some(containing * (v / 100.0));
+        return Some(containing * (v / layout_constants::PERCENT_DENOMINATOR));
     }
     None
 }
@@ -997,7 +1053,7 @@ fn line_height_px(sn: &crate::style::StyledNode, font_size: f32) -> f32 {
             return font_size * m;
         }
     }
-    font_size * 1.2
+    font_size * layout_constants::DEFAULT_LINE_HEIGHT_MULTIPLIER
 }
 
 fn parse_px(s: &str) -> Option<f32> {
@@ -1012,7 +1068,7 @@ fn parse_px(s: &str) -> Option<f32> {
 /// 優先順位:
 /// 1) CSS width/height (px)
 /// 2) HTML attributes width/height (数値)
-/// 3) fallback 300x150
+/// 3) fallback default image size
 fn img_intrinsic_size_px(
     sn: &crate::style::StyledNode,
     img_cache: &dyn ImageSizeProvider,
@@ -1045,7 +1101,10 @@ fn img_intrinsic_size_px(
 
     // まずは明示指定（CSS/attr）
     if let (Some(w), Some(h)) = (css_w.or(attr_w), css_h.or(attr_h)) {
-        return (w.max(1.0), h.max(1.0));
+        return (
+            w.max(layout_constants::MIN_LAYOUT_SIZE_PX),
+            h.max(layout_constants::MIN_LAYOUT_SIZE_PX),
+        );
     }
 
     if let Some(w) = css_w.or(attr_w) {
@@ -1053,28 +1112,46 @@ fn img_intrinsic_size_px(
         if let Some((nw, nh)) = natural {
             if nw > 0 && nh > 0 {
                 let ratio = (nh as f32) / (nw as f32);
-                return (w.max(1.0), (w * ratio).max(1.0));
+                return (
+                    w.max(layout_constants::MIN_LAYOUT_SIZE_PX),
+                    (w * ratio).max(layout_constants::MIN_LAYOUT_SIZE_PX),
+                );
             }
         }
-        return (w.max(1.0), 150.0);
+        return (
+            w.max(layout_constants::MIN_LAYOUT_SIZE_PX),
+            layout_constants::DEFAULT_IMAGE_HEIGHT_PX,
+        );
     }
 
     if let Some(h) = css_h.or(attr_h) {
         if let Some((nw, nh)) = natural {
             if nw > 0 && nh > 0 {
                 let ratio = (nw as f32) / (nh as f32);
-                return ((h * ratio).max(1.0), h.max(1.0));
+                return (
+                    (h * ratio).max(layout_constants::MIN_LAYOUT_SIZE_PX),
+                    h.max(layout_constants::MIN_LAYOUT_SIZE_PX),
+                );
             }
         }
-        return (300.0, h.max(1.0));
+        return (
+            layout_constants::DEFAULT_IMAGE_WIDTH_PX,
+            h.max(layout_constants::MIN_LAYOUT_SIZE_PX),
+        );
     }
 
     // 明示指定が無いなら自然サイズ
     if let Some((nw, nh)) = natural {
-        return ((nw as f32).max(1.0), (nh as f32).max(1.0));
+        return (
+            (nw as f32).max(layout_constants::MIN_LAYOUT_SIZE_PX),
+            (nh as f32).max(layout_constants::MIN_LAYOUT_SIZE_PX),
+        );
     }
 
-    (300.0, 150.0)
+    (
+        layout_constants::DEFAULT_IMAGE_WIDTH_PX,
+        layout_constants::DEFAULT_IMAGE_HEIGHT_PX,
+    )
 }
 
 /// styleノードから Text を集める（leaf block の救済用）

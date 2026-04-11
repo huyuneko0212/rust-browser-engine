@@ -4,6 +4,7 @@ use std::fs;
 use wgpu::*;
 use winit::window::Window;
 
+use crate::constants::{color, gpu as gpu_constants};
 use crate::display::{DisplayItem, DrawBorder, DrawImage, DrawRect, DrawText};
 use crate::image_loader;
 use image::GenericImageView;
@@ -309,12 +310,12 @@ impl<'a> GPU<'a> {
         let config = SurfaceConfiguration {
             usage: TextureUsages::RENDER_ATTACHMENT,
             format,
-            width: size.width.max(1),
-            height: size.height.max(1),
+            width: size.width.max(gpu_constants::MIN_SURFACE_SIZE_PX),
+            height: size.height.max(gpu_constants::MIN_SURFACE_SIZE_PX),
             present_mode: PresentMode::Fifo,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: gpu_constants::MAX_FRAME_LATENCY,
         };
         surface.configure(&device, &config);
 
@@ -357,7 +358,7 @@ impl<'a> GPU<'a> {
             multiview: None,
         });
 
-        let rect_cap = 12_000usize;
+        let rect_cap = gpu_constants::INITIAL_RECT_VERTEX_CAPACITY;
         let rect_vbuf = device.create_buffer(&BufferDescriptor {
             label: Some("rect vbuf"),
             size: (rect_cap * std::mem::size_of::<RectVertex>()) as BufferAddress,
@@ -366,7 +367,7 @@ impl<'a> GPU<'a> {
         });
 
         // ---------- glyph atlas ----------
-        let atlas_size = 1024u32;
+        let atlas_size = gpu_constants::GLYPH_ATLAS_SIZE_PX;
         let atlas_tex = device.create_texture(&TextureDescriptor {
             label: Some("glyph atlas"),
             size: Extent3d {
@@ -463,7 +464,7 @@ impl<'a> GPU<'a> {
             multiview: None,
         });
 
-        let text_cap = 48_000usize; // 文字は多いので広め（= 8000 glyph）
+        let text_cap = gpu_constants::INITIAL_TEXT_VERTEX_CAPACITY;
         let text_vbuf = device.create_buffer(&BufferDescriptor {
             label: Some("text vbuf"),
             size: (text_cap * std::mem::size_of::<TextVertex>()) as BufferAddress,
@@ -538,7 +539,7 @@ impl<'a> GPU<'a> {
             multiview: None,
         });
 
-        let image_cap = 12_000usize;
+        let image_cap = gpu_constants::INITIAL_IMAGE_VERTEX_CAPACITY;
         let image_vbuf = device.create_buffer(&BufferDescriptor {
             label: Some("image vbuf"),
             size: (image_cap * std::mem::size_of::<ImageVertex>()) as BufferAddress,
@@ -658,12 +659,7 @@ impl<'a> GPU<'a> {
                     view: &view,
                     resolve_target: None,
                     ops: Operations {
-                        load: LoadOp::Clear(Color {
-                            r: 0.97,
-                            g: 0.97,
-                            b: 0.98,
-                            a: 1.0,
-                        }),
+                        load: LoadOp::Clear(color::CLEAR_BACKGROUND),
                         store: StoreOp::Store,
                     },
                 })],
@@ -688,8 +684,11 @@ impl<'a> GPU<'a> {
                 for (i, im) in drawable_images.iter().enumerate() {
                     if let Some(cached) = self.image_cache.get(&im.key) {
                         pass.set_bind_group(0, &cached.bind_group, &[]);
-                        let start = (i * 6) as u32;
-                        pass.draw(start..(start + 6), 0..1);
+                        let start = (i * gpu_constants::VERTICES_PER_QUAD) as u32;
+                        pass.draw(
+                            start..(start + gpu_constants::VERTICES_PER_QUAD as u32),
+                            0..1,
+                        );
                     } else {
                         eprintln!("[img] cache miss key={} src={}", im.key, im.src);
                     }
@@ -757,7 +756,7 @@ impl<'a> GPU<'a> {
     }
 
     fn rect_vertices(&self, rects: &[DrawRect], scroll_y: f32) -> Vec<RectVertex> {
-        let mut out = Vec::with_capacity(rects.len() * 6);
+        let mut out = Vec::with_capacity(rects.len() * gpu_constants::VERTICES_PER_QUAD);
 
         let w = self.config.width as f32;
         let h = self.config.height as f32;
@@ -801,7 +800,7 @@ impl<'a> GPU<'a> {
     }
 
     fn border_vertices(&self, borders: &[DrawBorder], scroll_y: f32) -> Vec<RectVertex> {
-        let mut out = Vec::with_capacity(borders.len() * 6);
+        let mut out = Vec::with_capacity(borders.len() * gpu_constants::VERTICES_PER_QUAD);
 
         let w = self.config.width as f32;
         let h = self.config.height as f32;
@@ -858,7 +857,7 @@ impl<'a> GPU<'a> {
     }
 
     fn image_vertices(&self, images: &[DrawImage], scroll_y: f32) -> Vec<ImageVertex> {
-        let mut out = Vec::with_capacity(images.len() * 6);
+        let mut out = Vec::with_capacity(images.len() * gpu_constants::VERTICES_PER_QUAD);
 
         let w = self.config.width as f32;
         let h = self.config.height as f32;
@@ -923,7 +922,7 @@ impl<'a> GPU<'a> {
         let h = self.config.height as f32;
 
         for t in texts {
-            let size_px = t.size_px.max(8.0);
+            let size_px = t.size_px.max(gpu_constants::MIN_TEXT_SIZE_PX);
             let key_size = size_px.round() as u32;
 
             let mut pen_x = t.x;
@@ -1028,7 +1027,7 @@ impl<'a> GPU<'a> {
 
         let (ax, ay) = self
             .packer
-            .alloc(gw, gh, 1)
+            .alloc(gw, gh, gpu_constants::GLYPH_ATLAS_PADDING_PX)
             .expect("atlas full (increase atlas size)");
 
         self.queue.write_texture(
@@ -1113,7 +1112,7 @@ impl<'a> GPU<'a> {
             &rgba,
             ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(iw * 4),
+                bytes_per_row: Some(iw * gpu_constants::RGBA_BYTES_PER_PIXEL),
                 rows_per_image: Some(ih),
             },
             Extent3d {
@@ -1165,7 +1164,7 @@ fn load_meiryo_font() -> fontdue::Font {
     for p in candidates {
         if let Ok(bytes) = fs::read(p) {
             let settings = fontdue::FontSettings {
-                collection_index: 0,
+                collection_index: gpu_constants::FONT_COLLECTION_INDEX,
                 ..Default::default()
             };
             if let Ok(font) = fontdue::Font::from_bytes(bytes, settings) {

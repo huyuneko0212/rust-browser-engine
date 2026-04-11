@@ -1,3 +1,4 @@
+mod constants;
 mod css;
 mod dom;
 mod html;
@@ -24,28 +25,8 @@ use winit::{
 use crate::display::DisplayItem;
 use crate::gpu::GPU;
 
+use crate::constants::{browser, http_status};
 use crate::utility::url_utils::{normalize_against, normalized_key_against, url_to_abs_string};
-
-// 最小UAスタイル（pxのみ）
-const UA_CSS: &str = r#"
-/* --- minimal UA stylesheet (px only) --- */
-html, body { display: block; margin: 8px; padding: 0; background: #ffffff; color: #111111; }
-body { line-height: 1.35; }
-
-a { color: #0645ad; text-decoration: underline; }
-a:visited { color: #0b0080; }
-
-h1 { display: block; font-size: 32px; margin: 16px 0; }
-h2 { display: block; font-size: 24px; margin: 14px 0; }
-h3 { display: block; font-size: 18px; margin: 12px 0; }
-
-p { display: block; margin: 10px 0; }
-
-ul, ol { display: block; margin: 10px 0 10px 18px; padding: 0; }
-li { display: block; margin: 4px 0; }
-
-small { font-size: 12px; }
-"#;
 
 // ------------------------------------------------------------
 // HTML/CSS 抽出
@@ -150,7 +131,7 @@ fn expand_css_imports(
     visited: &mut HashSet<String>,
     depth: usize,
 ) -> String {
-    if depth > 10 {
+    if depth > browser::MAX_CSS_IMPORT_DEPTH {
         return css_text.to_string();
     }
 
@@ -175,10 +156,13 @@ fn expand_css_imports(
             }
 
             let resp = crate::http::request_allow_error(&import_url);
-            if resp.status_code == 0 || resp.body.is_empty() {
+            if resp.status_code == http_status::REQUEST_FAILED || resp.body.is_empty() {
                 continue;
             }
-            if (200..300).contains(&resp.status_code) && is_css_content_type(&resp.content_type) {
+            if (http_status::SUCCESS_MIN..http_status::SUCCESS_MAX_EXCLUSIVE)
+                .contains(&resp.status_code)
+                && is_css_content_type(&resp.content_type)
+            {
                 out.push_str("\n/* ---- @import expanded ---- */\n");
                 out.push_str(&expand_css_imports(
                     &import_url,
@@ -240,13 +224,13 @@ fn apply_hover(display_list: &mut [DisplayItem], hovered: Option<&str>) {
             DisplayItem::Text(t) => {
                 t.color = t.base_color;
                 if hovered.is_some_and(|h| t.href.as_deref() == Some(h)) {
-                    t.color = darker(t.base_color, 0.75);
+                    t.color = darker(t.base_color, browser::LINK_HOVER_DARKEN_FACTOR);
                 }
             }
             DisplayItem::Rect(r) => {
                 r.color = r.base_color;
                 if hovered.is_some_and(|h| r.href.as_deref() == Some(h)) {
-                    r.color = darker(r.base_color, 0.75);
+                    r.color = darker(r.base_color, browser::LINK_HOVER_DARKEN_FACTOR);
                 }
             }
             DisplayItem::Image(_) => {}
@@ -327,7 +311,7 @@ fn extract_img_srcs(node: &dom::Node, out: &mut Vec<String>) {
 
 fn build_page(url: &url::URL) -> Vec<DisplayItem> {
     let response = crate::http::request_allow_error(&url);
-    if response.status_code == 0 || response.body.is_empty() {
+    if response.status_code == http_status::REQUEST_FAILED || response.body.is_empty() {
         return vec![];
     }
     println!("HTML status: {}", response.status_code);
@@ -360,7 +344,7 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
     }
 
     // 2) CSS（UA + inline + link + @import）
-    let mut css_text = String::from(UA_CSS);
+    let mut css_text = String::from(browser::UA_CSS);
     css_text.push('\n');
     extract_style_text(&dom_root, &mut css_text);
 
@@ -375,10 +359,12 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
         println!("fetch css -> {}", url_to_abs_string(&css_url));
 
         let resp = crate::http::request_allow_error(&css_url);
-        if resp.status_code == 0 || resp.body.is_empty() {
+        if resp.status_code == http_status::REQUEST_FAILED || resp.body.is_empty() {
             continue;
         }
-        if !(200..300).contains(&resp.status_code) {
+        if !(http_status::SUCCESS_MIN..http_status::SUCCESS_MAX_EXCLUSIVE)
+            .contains(&resp.status_code)
+        {
             println!("css fetch failed (status {}): {}", resp.status_code, href);
             continue;
         }
@@ -419,8 +405,8 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
     let mut layout_root = layout::build_layout_tree(styled_root);
 
     let mut viewport = layout::Dimensions::default();
-    viewport.content.width = 800.0;
-    viewport.content.height = 600.0;
+    viewport.content.width = browser::INITIAL_VIEWPORT_WIDTH;
+    viewport.content.height = browser::INITIAL_VIEWPORT_HEIGHT;
 
     let font_bytes = std::fs::read(r"C:\Windows\Fonts\meiryo.ttc").unwrap();
     let font = fontdue::Font::from_bytes(font_bytes, fontdue::FontSettings::default()).unwrap();
@@ -472,7 +458,7 @@ fn main() {
 
     let window: &'static winit::window::Window = Box::leak(Box::new(
         WindowBuilder::new()
-            .with_title("Rust Browser (winit0.29 + wgpu0.19)")
+            .with_title(browser::WINDOW_TITLE)
             .build(&event_loop)
             .unwrap(),
     ));
@@ -500,7 +486,7 @@ fn main() {
 
                     WindowEvent::MouseWheel { delta, .. } => {
                         let dy = match delta {
-                            MouseScrollDelta::LineDelta(_, y) => -y * 40.0,
+                            MouseScrollDelta::LineDelta(_, y) => -y * browser::LINE_SCROLL_PX,
                             MouseScrollDelta::PixelDelta(p) => -(p.y as f32),
                         };
                         scroll_y =

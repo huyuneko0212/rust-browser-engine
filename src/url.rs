@@ -1,3 +1,5 @@
+use crate::constants::protocol;
+
 #[derive(Debug, Clone)]
 pub struct URL {
     pub scheme: String,
@@ -70,7 +72,7 @@ impl URL {
             return URL {
                 scheme,
                 host,
-                port: 0,
+                port: protocol::FILE_PORT,
                 path,
             };
         }
@@ -88,8 +90,8 @@ impl URL {
         let path = format!("/{}", parts.next().unwrap());
 
         let mut port = match scheme.as_str() {
-            "http" => 80,
-            "https" => 443,
+            "http" => protocol::HTTP_PORT,
+            "https" => protocol::HTTPS_PORT,
             _ => unreachable!(),
         };
 

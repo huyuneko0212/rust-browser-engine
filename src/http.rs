@@ -10,9 +10,8 @@ use brotli::Decompressor;
 use flate2::read::GzDecoder;
 use native_tls::{HandshakeError, TlsConnector};
 
+use crate::constants::{http_status, network};
 use crate::url::URL;
-
-const MAX_REDIRECTS: usize = 10;
 
 #[derive(Debug)]
 pub enum HttpError {
@@ -97,7 +96,7 @@ pub fn request_allow_error(url: &URL) -> Response {
         Err(e) => {
             eprintln!("[http] request failed: {} url={}", e, debug_url(url));
             Response {
-                status_code: 0,
+                status_code: http_status::REQUEST_FAILED,
                 headers: HashMap::new(),
                 body: Vec::new(),
                 content_type: None,
@@ -109,14 +108,14 @@ pub fn request_allow_error(url: &URL) -> Response {
 fn request_with_tls(url: &URL, tls: &TlsConnector) -> Result<Response, HttpError> {
     let mut current = url.clone();
 
-    for _ in 0..=MAX_REDIRECTS {
+    for _ in 0..=network::HTTP_MAX_REDIRECTS {
         let resp = match current.scheme.as_str() {
             "file" => request_file(&current)?,
             "http" | "https" => request_http_like(&current, tls)?,
             _ => return Err(HttpError::InvalidResponse("unsupported scheme")),
         };
 
-        if matches!(resp.status_code, 301 | 302 | 303 | 307 | 308) {
+        if http_status::REDIRECTS.contains(&resp.status_code) {
             if let Some(loc) = resp.header("location").map(str::to_string) {
                 current = current.resolve_location(&loc);
                 continue;
@@ -138,7 +137,7 @@ fn request_file(url: &URL) -> Result<Response, HttpError> {
     let content_type = guess_content_type_from_path(&fs_path);
 
     Ok(Response {
-        status_code: 200,
+        status_code: http_status::OK,
         headers: HashMap::new(),
         body: bytes,
         content_type,
@@ -149,8 +148,8 @@ fn request_http_like(url: &URL, tls: &TlsConnector) -> Result<Response, HttpErro
     let addr = format!("{}:{}", url.host, url.port);
     let stream = TcpStream::connect(addr)?;
     // ブラウザっぽく：固まり防止（必要なら調整）
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(20)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(20)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(network::SOCKET_TIMEOUT_SECS)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(network::SOCKET_TIMEOUT_SECS)));
 
     let req = build_request(url);
 
@@ -196,8 +195,8 @@ Connection: close\r\n\
 }
 
 fn parse_response_bytes(resp: Vec<u8>) -> Result<Response, HttpError> {
-    let header_end =
-        find_bytes(&resp, b"\r\n\r\n").ok_or(HttpError::InvalidResponse("missing header terminator"))?;
+    let header_end = find_bytes(&resp, b"\r\n\r\n")
+        .ok_or(HttpError::InvalidResponse("missing header terminator"))?;
     let head_bytes = &resp[..header_end];
     let body_bytes = &resp[header_end + 4..];
 
@@ -210,7 +209,10 @@ fn parse_response_bytes(resp: Vec<u8>) -> Result<Response, HttpError> {
 
     let mut status_parts = status_line.split_whitespace();
     let _http = status_parts.next().unwrap_or("");
-    let status_code: u16 = status_parts.next().unwrap_or("0").parse().unwrap_or(0);
+    let status_code: u16 = status_parts
+        .next()
+        .and_then(|part| part.parse().ok())
+        .unwrap_or(http_status::REQUEST_FAILED);
 
     let mut headers = HashMap::new();
     for line in lines {
@@ -220,7 +222,11 @@ fn parse_response_bytes(resp: Vec<u8>) -> Result<Response, HttpError> {
     }
     let content_type = headers.get("content-type").cloned();
 
-    if status_code == 204 || status_code == 304 || (100..200).contains(&status_code) {
+    if status_code == http_status::NO_CONTENT
+        || status_code == http_status::NOT_MODIFIED
+        || (http_status::INFORMATIONAL_MIN..http_status::INFORMATIONAL_MAX_EXCLUSIVE)
+            .contains(&status_code)
+    {
         return Ok(Response {
             status_code,
             headers,
@@ -272,7 +278,7 @@ fn decode_gzip(input: &[u8]) -> Result<Vec<u8>, HttpError> {
 }
 
 fn decode_brotli(input: &[u8]) -> Result<Vec<u8>, HttpError> {
-    let mut br = Decompressor::new(input, 4096);
+    let mut br = Decompressor::new(input, network::BROTLI_BUFFER_SIZE);
     let mut out = Vec::new();
     br.read_to_end(&mut out)
         .map_err(|_| HttpError::DecodeFailed("brotli"))?;

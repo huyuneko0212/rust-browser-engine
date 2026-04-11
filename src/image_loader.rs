@@ -4,7 +4,7 @@ use std::sync::{Mutex, OnceLock};
 
 use image::GenericImageView;
 
-const MAX_REDIRECTS: usize = 5;
+use crate::constants::{http_status, network};
 
 /// 画像ロードに失敗したキー（正規化済み URL 文字列）を覚えておく
 static FAILED_IMAGE_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -26,7 +26,7 @@ pub fn load_image_bytes(src: &str) -> Option<Vec<u8>> {
     if starts_with_ignore_ascii_case(src, "http://")
         || starts_with_ignore_ascii_case(src, "https://")
     {
-        return load_http_url_bytes_follow_redirects(src, MAX_REDIRECTS);
+        return load_http_url_bytes_follow_redirects(src, network::IMAGE_MAX_REDIRECTS);
     }
 
     // それ以外（生の Windows パス救済）
@@ -54,11 +54,13 @@ fn load_http_url_bytes_follow_redirects(src: &str, max_redirects: usize) -> Opti
 
     for _ in 0..=max_redirects {
         let resp = crate::http::request_allow_error(&current);
-        if resp.status_code == 0 || resp.body.is_empty() {
+        if resp.status_code == http_status::REQUEST_FAILED || resp.body.is_empty() {
             return None;
         }
         // 2xx
-        if (200..300).contains(&resp.status_code) {
+        if (http_status::SUCCESS_MIN..http_status::SUCCESS_MAX_EXCLUSIVE)
+            .contains(&resp.status_code)
+        {
             // Content-Type はサイトによって雑なので、ここは「ログだけ」で基本許容
             if let Some(ct) = &resp.content_type {
                 let ct_l = ct.to_lowercase();
@@ -73,7 +75,7 @@ fn load_http_url_bytes_follow_redirects(src: &str, max_redirects: usize) -> Opti
         }
 
         // redirect
-        if matches!(resp.status_code, 301 | 302 | 303 | 307 | 308) {
+        if http_status::REDIRECTS.contains(&resp.status_code) {
             // http.rs 側で headers は lower-case に統一しているので "location" だけ見ればOK
             let location = resp.header("location").map(|s| s.trim().to_string());
 

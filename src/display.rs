@@ -1,3 +1,4 @@
+use crate::constants::{color, display as display_constants, layout as layout_constants};
 use crate::layout::{BoxType, CornerRadii, LayoutBox};
 use fontdue::Font;
 
@@ -67,9 +68,6 @@ pub struct DrawImage {
     pub href: Option<String>,
     pub hit: crate::layout::Rect,
 }
-
-const UNDERLINE_THICKNESS: f32 = 1.5;
-const UNDERLINE_GAP: f32 = 2.0;
 
 /// base_url を受け取って、画像 src を正規化できるようにする
 pub fn build_display_list(
@@ -178,7 +176,7 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
                     .max(d.border.bottom);
 
                 if border_width > 0.0 {
-                    let border_color = sn.border_color().unwrap_or([0.0, 0.0, 0.0, 1.0]); // デフォルト黒
+                    let border_color = sn.border_color().unwrap_or(color::BLACK);
 
                     out.push(DisplayItem::Border(DrawBorder {
                         x: border_box.x,
@@ -200,13 +198,14 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
                 if ed.tag_name == "li" {
                     let c = &node.dimensions.content;
 
-                    let font_size = font_size_px(sn).unwrap_or(16.0);
+                    let font_size =
+                        font_size_px(sn).unwrap_or(layout_constants::DEFAULT_FONT_SIZE_PX);
                     let line_h = line_height_px(sn, font_size);
 
-                    let bx = c.x - (font_size * 1.1);
+                    let bx = c.x - (font_size * display_constants::LIST_MARKER_OFFSET_EM);
                     let by = c.y + font_size;
 
-                    let color = sn.color().unwrap_or([0.1, 0.1, 0.12, 1.0]);
+                    let color = sn.color().unwrap_or(color::DEFAULT_TEXT);
                     let base_color = color;
 
                     out.push(DisplayItem::Text(DrawText {
@@ -238,11 +237,12 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
 
                 if !txt.is_empty() && txt != " " {
                     let is_link = sn.link_href.is_some();
-                    let font_size = font_size_px(sn).unwrap_or(16.0);
+                    let font_size =
+                        font_size_px(sn).unwrap_or(layout_constants::DEFAULT_FONT_SIZE_PX);
 
-                    let mut color = sn.color().unwrap_or([0.1, 0.1, 0.12, 1.0]);
+                    let mut color = sn.color().unwrap_or(color::DEFAULT_TEXT);
                     if is_link && sn.value("color").is_none() {
-                        color = [0.0, 0.35, 0.95, 1.0];
+                        color = color::DEFAULT_LINK;
                     }
                     let base_color = color;
                     let underline_allowed = is_link && !text_decoration_none(sn);
@@ -262,12 +262,13 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
                             }));
 
                             if underline_allowed {
-                                let underline_y = c.y + font_size + UNDERLINE_GAP;
+                                let underline_y =
+                                    c.y + font_size + display_constants::UNDERLINE_GAP;
                                 out.push(DisplayItem::Rect(DrawRect {
                                     x: c.x,
                                     y: underline_y,
                                     w: c.width.max(0.0),
-                                    h: UNDERLINE_THICKNESS,
+                                    h: display_constants::UNDERLINE_THICKNESS,
                                     radius: CornerRadii::default(),
                                     color,
                                     base_color,
@@ -294,12 +295,13 @@ fn walk(node: &LayoutBox, out: &mut Vec<DisplayItem>, font: &Font, base_url: &cr
                             }));
 
                             if underline_allowed {
-                                let underline_y = c.y + font_size + UNDERLINE_GAP;
+                                let underline_y =
+                                    c.y + font_size + display_constants::UNDERLINE_GAP;
                                 out.push(DisplayItem::Rect(DrawRect {
                                     x: c.x,
                                     y: underline_y,
                                     w: c.width.max(0.0),
-                                    h: UNDERLINE_THICKNESS,
+                                    h: display_constants::UNDERLINE_THICKNESS,
                                     radius: CornerRadii::default(),
                                     color,
                                     base_color,
@@ -386,7 +388,7 @@ fn line_height_px(sn: &crate::style::StyledNode, font_size: f32) -> f32 {
             return font_size * m;
         }
     }
-    font_size * 1.2
+    font_size * layout_constants::DEFAULT_LINE_HEIGHT_MULTIPLIER
 }
 
 /// &String / &str どっちでも受けられるように
@@ -547,8 +549,8 @@ fn push_alt_text(
     c: &crate::layout::Rect,
     text: String,
 ) {
-    let font_size = font_size_px(sn).unwrap_or(16.0);
-    let color = sn.color().unwrap_or([0.1, 0.1, 0.12, 1.0]);
+    let font_size = font_size_px(sn).unwrap_or(layout_constants::DEFAULT_FONT_SIZE_PX);
+    let color = sn.color().unwrap_or(color::DEFAULT_TEXT);
     let base_color = color;
 
     out.push(DisplayItem::Text(DrawText {

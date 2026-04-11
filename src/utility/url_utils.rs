@@ -1,5 +1,6 @@
 // src/url_utils.rs
 
+use crate::constants::protocol;
 use crate::url;
 
 /// URLを「正規化した絶対文字列」にする（default port を省略）
@@ -7,8 +8,8 @@ use crate::url;
 pub fn url_to_abs_string(u: &url::URL) -> String {
     match (u.scheme.as_str(), u.port) {
         ("file", _) => format!("file://{}", u.path),
-        ("http", 80) => format!("http://{}{}", u.host, u.path),
-        ("https", 443) => format!("https://{}{}", u.host, u.path),
+        ("http", protocol::HTTP_PORT) => format!("http://{}{}", u.host, u.path),
+        ("https", protocol::HTTPS_PORT) => format!("https://{}{}", u.host, u.path),
         ("http", p) => format!("http://{}:{}{}", u.host, p, u.path),
         ("https", p) => format!("https://{}:{}{}", u.host, p, u.path),
         _ => format!("{}://{}:{}{}", u.scheme, u.host, u.port, u.path),

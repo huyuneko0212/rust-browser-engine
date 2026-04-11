@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use crate::constants::color;
 use crate::css::{Declaration, Rule, Stylesheet};
 use crate::dom::{ElementData, Node, NodeType};
 
@@ -427,22 +428,22 @@ fn parse_color(s: &str) -> Option<[f32; 4]> {
 
     // transparent
     if t == "transparent" {
-        return Some([0.0, 0.0, 0.0, 0.0]);
+        return Some(color::TRANSPARENT);
     }
 
     // #rgb / #rrggbb
     if let Some(hex) = t.strip_prefix('#') {
         if hex.len() == 3 {
-            let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()? as f32 / 255.0;
-            let g = u8::from_str_radix(&hex[1..2].repeat(2), 16).ok()? as f32 / 255.0;
-            let b = u8::from_str_radix(&hex[2..3].repeat(2), 16).ok()? as f32 / 255.0;
-            return Some([r, g, b, 1.0]);
+            let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()? as f32 / color::CHANNEL_MAX;
+            let g = u8::from_str_radix(&hex[1..2].repeat(2), 16).ok()? as f32 / color::CHANNEL_MAX;
+            let b = u8::from_str_radix(&hex[2..3].repeat(2), 16).ok()? as f32 / color::CHANNEL_MAX;
+            return Some([r, g, b, color::OPAQUE_ALPHA]);
         }
         if hex.len() == 6 {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()? as f32 / 255.0;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()? as f32 / 255.0;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()? as f32 / 255.0;
-            return Some([r, g, b, 1.0]);
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()? as f32 / color::CHANNEL_MAX;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()? as f32 / color::CHANNEL_MAX;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()? as f32 / color::CHANNEL_MAX;
+            return Some([r, g, b, color::OPAQUE_ALPHA]);
         }
     }
 
@@ -457,25 +458,25 @@ fn parse_color(s: &str) -> Option<[f32; 4]> {
         if parts.len() < 3 {
             return None;
         }
-        let r = parts[0].parse::<f32>().ok()? / 255.0;
-        let g = parts[1].parse::<f32>().ok()? / 255.0;
-        let b = parts[2].parse::<f32>().ok()? / 255.0;
+        let r = parts[0].parse::<f32>().ok()? / color::CHANNEL_MAX;
+        let g = parts[1].parse::<f32>().ok()? / color::CHANNEL_MAX;
+        let b = parts[2].parse::<f32>().ok()? / color::CHANNEL_MAX;
         let a = if parts.len() >= 4 {
             parts[3].parse::<f32>().ok()?
         } else {
-            1.0
+            color::OPAQUE_ALPHA
         };
         return Some([r, g, b, a]);
     }
 
     // named colors（最小）
     match t.as_str() {
-        "black" => Some([0.0, 0.0, 0.0, 1.0]),
-        "white" => Some([1.0, 1.0, 1.0, 1.0]),
-        "gray" | "grey" => Some([0.5, 0.5, 0.5, 1.0]),
-        "red" => Some([1.0, 0.0, 0.0, 1.0]),
-        "green" => Some([0.0, 1.0, 0.0, 1.0]),
-        "blue" => Some([0.0, 0.0, 1.0, 1.0]),
+        "black" => Some(color::BLACK),
+        "white" => Some(color::WHITE),
+        "gray" | "grey" => Some(color::GRAY),
+        "red" => Some(color::RED),
+        "green" => Some(color::GREEN),
+        "blue" => Some(color::BLUE),
         _ => None,
     }
 }
