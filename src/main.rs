@@ -17,6 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 
 use winit::{
+    dpi::LogicalSize,
     event::{ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::{CursorIcon, WindowBuilder},
@@ -284,6 +285,12 @@ impl layout::ImageSizeProvider for ImageCache {
     }
 }
 
+struct PageDocument {
+    url: url::URL,
+    styled_root: style::StyledNode,
+    img_cache: ImageCache,
+}
+
 // --- DOM から <img src="..."> を集める ---
 fn extract_img_srcs(node: &dom::Node, out: &mut Vec<String>) {
     match &node.node_type {
@@ -309,10 +316,10 @@ fn extract_img_srcs(node: &dom::Node, out: &mut Vec<String>) {
 // ページ構築
 // ------------------------------------------------------------
 
-fn build_page(url: &url::URL) -> Vec<DisplayItem> {
+fn fetch_page_document(url: &url::URL) -> Option<PageDocument> {
     let response = crate::http::request_allow_error(&url);
     if response.status_code == http_status::REQUEST_FAILED || response.body.is_empty() {
-        return vec![];
+        return None;
     }
     println!("HTML status: {}", response.status_code);
 
@@ -402,23 +409,38 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
     // 3) style/layout/display
     let stylesheet = css::Parser::new(css_text).parse_stylesheet();
     let styled_root = style::style_tree(dom_root, &stylesheet);
-    let mut layout_root = layout::build_layout_tree(styled_root);
 
+    Some(PageDocument {
+        url: url.clone(),
+        styled_root,
+        img_cache,
+    })
+}
+
+fn build_display_list_for_viewport(
+    page: &PageDocument,
+    viewport_width: f32,
+    viewport_height: f32,
+    font: &fontdue::Font,
+) -> Vec<DisplayItem> {
+    let mut layout_root = layout::build_layout_tree(page.styled_root.clone());
     let mut viewport = layout::Dimensions::default();
-    viewport.content.width = browser::INITIAL_VIEWPORT_WIDTH;
-    viewport.content.height = browser::INITIAL_VIEWPORT_HEIGHT;
+    viewport.content.width = viewport_width;
+    viewport.content.height = viewport_height;
 
-    let font_bytes = std::fs::read(r"C:\Windows\Fonts\meiryo.ttc").unwrap();
-    let font = fontdue::Font::from_bytes(font_bytes, fontdue::FontSettings::default()).unwrap();
-
-    layout_root.layout_with_font(viewport, &font, &img_cache);
+    layout_root.layout_with_font(viewport, font, &page.img_cache);
     println!("layout完了");
 
     let mut display_list = vec![];
-    display::build_display_list(&layout_root, &mut display_list, &font, url);
+    display::build_display_list(&layout_root, &mut display_list, font, &page.url);
     println!("display items: {}", display_list.len());
 
     display_list
+}
+
+fn load_layout_font() -> fontdue::Font {
+    let font_bytes = std::fs::read(r"C:\Windows\Fonts\meiryo.ttc").unwrap();
+    fontdue::Font::from_bytes(font_bytes, fontdue::FontSettings::default()).unwrap()
 }
 
 // ------------------------------------------------------------
@@ -427,26 +449,59 @@ fn build_page(url: &url::URL) -> Vec<DisplayItem> {
 
 struct BrowserState {
     url: url::URL,
+    page: Option<PageDocument>,
     display_list: Vec<DisplayItem>,
     doc_height: f32,
 }
 
 impl BrowserState {
-    fn new(initial: url::URL) -> Self {
-        let display_list = build_page(&initial);
-        let doc_height = estimate_doc_height(&display_list);
-        Self {
+    fn new(
+        initial: url::URL,
+        viewport_width: f32,
+        viewport_height: f32,
+        font: &fontdue::Font,
+    ) -> Self {
+        let mut state = Self {
             url: initial,
-            display_list,
-            doc_height,
-        }
+            page: None,
+            display_list: vec![],
+            doc_height: 0.0,
+        };
+        state.load_current_url(viewport_width, viewport_height, font);
+        state
     }
 
-    fn navigate(&mut self, next: url::URL) {
+    fn navigate(
+        &mut self,
+        next: url::URL,
+        viewport_width: f32,
+        viewport_height: f32,
+        font: &fontdue::Font,
+    ) {
         println!("\n=== navigate -> {} ===", url_to_abs_string(&next));
-        self.display_list = build_page(&next);
-        self.doc_height = estimate_doc_height(&self.display_list);
         self.url = next;
+        self.load_current_url(viewport_width, viewport_height, font);
+    }
+
+    fn load_current_url(
+        &mut self,
+        viewport_width: f32,
+        viewport_height: f32,
+        font: &fontdue::Font,
+    ) {
+        self.page = fetch_page_document(&self.url);
+        self.relayout(viewport_width, viewport_height, font);
+    }
+
+    fn relayout(&mut self, viewport_width: f32, viewport_height: f32, font: &fontdue::Font) {
+        self.display_list = self
+            .page
+            .as_ref()
+            .map(|page| {
+                build_display_list_for_viewport(page, viewport_width, viewport_height, font)
+            })
+            .unwrap_or_default();
+        self.doc_height = estimate_doc_height(&self.display_list);
     }
 }
 
@@ -455,16 +510,26 @@ fn main() {
     let initial_url = url::URL::new(&url_str);
 
     let event_loop = EventLoop::new().unwrap();
+    let layout_font = load_layout_font();
 
     let window: &'static winit::window::Window = Box::leak(Box::new(
         WindowBuilder::new()
             .with_title(browser::WINDOW_TITLE)
+            .with_inner_size(LogicalSize::new(
+                browser::INITIAL_VIEWPORT_WIDTH as f64,
+                browser::INITIAL_VIEWPORT_HEIGHT as f64,
+            ))
             .build(&event_loop)
             .unwrap(),
     ));
 
     let mut gpu = pollster::block_on(GPU::new(window));
-    let mut state = BrowserState::new(initial_url);
+    let mut state = BrowserState::new(
+        initial_url,
+        gpu.viewport_width(),
+        gpu.viewport_height(),
+        &layout_font,
+    );
 
     let mut mouse_x = 0.0f32;
     let mut mouse_y = 0.0f32;
@@ -481,7 +546,22 @@ fn main() {
 
                     WindowEvent::Resized(size) => {
                         gpu.resize(size);
-                        scroll_y = clamp_scroll(scroll_y, state.doc_height, gpu.viewport_height());
+                        if size.width > 0 && size.height > 0 {
+                            state.relayout(
+                                gpu.viewport_width(),
+                                gpu.viewport_height(),
+                                &layout_font,
+                            );
+                            scroll_y =
+                                clamp_scroll(scroll_y, state.doc_height, gpu.viewport_height());
+
+                            let now =
+                                hit_test_link(&state.display_list, mouse_x, mouse_y, scroll_y);
+                            if now != hovered_href {
+                                hovered_href = now;
+                            }
+                            apply_hover(&mut state.display_list, hovered_href.as_deref());
+                        }
                     }
 
                     WindowEvent::MouseWheel { delta, .. } => {
@@ -519,7 +599,12 @@ fn main() {
                                 hit_test_link(&state.display_list, mouse_x, mouse_y, scroll_y)
                             {
                                 let next = state.url.resolve_location(&href);
-                                state.navigate(next);
+                                state.navigate(
+                                    next,
+                                    gpu.viewport_width(),
+                                    gpu.viewport_height(),
+                                    &layout_font,
+                                );
 
                                 scroll_y = 0.0;
                                 hovered_href = None;
