@@ -858,6 +858,7 @@ pub fn build_layout_tree(style_node: &StyledNode) -> LayoutBox<'_> {
     // browser.engineering 的に
     // - block の子: block はそのまま
     // - inline の連続: Anonymous block box にまとめて、その中に inline を入れる
+    // - inline の子: Chrome と同じように同じ IFC の中へ直列に流す
     let display = style_node.display();
 
     let mut root = LayoutBox::new(match display {
@@ -868,6 +869,15 @@ pub fn build_layout_tree(style_node: &StyledNode) -> LayoutBox<'_> {
 
     // Display::None は上で Anonymous に落ちてるので、ここでは children を作らない（最小）
     if display == Display::None {
+        return root;
+    }
+
+    if display == Display::Inline {
+        for child in &style_node.children {
+            if child.display() != Display::None {
+                root.children.push(build_layout_tree(child));
+            }
+        }
         return root;
     }
 
@@ -1519,4 +1529,113 @@ fn collapse_whitespace(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct EmptyImageCache;
+
+    impl ImageSizeProvider for EmptyImageCache {
+        fn normalize_src_key(&self, _src: &str) -> Option<String> {
+            None
+        }
+
+        fn natural_size_px(&self, _key: &str) -> Option<(u32, u32)> {
+            None
+        }
+    }
+
+    fn styled_tree(input: &str) -> crate::style::StyledNode {
+        let dom = crate::html::parse(input.to_string());
+        crate::style::style_tree(dom, &crate::css::Stylesheet::default())
+    }
+
+    fn test_font() -> Font {
+        fontdue::Font::from_bytes(
+            include_bytes!("../assets/DejaVuSans.ttf") as &[u8],
+            fontdue::FontSettings::default(),
+        )
+        .unwrap()
+    }
+
+    fn is_element(node: &LayoutBox<'_>, tag: &str) -> bool {
+        node.get_style_node()
+            .and_then(|sn| match &sn.node.node_type {
+                crate::dom::NodeType::Element(ed) => Some(ed.tag_name.as_str()),
+                _ => None,
+            })
+            == Some(tag)
+    }
+
+    fn find_element<'tree, 'style>(
+        node: &'tree LayoutBox<'style>,
+        tag: &str,
+    ) -> Option<&'tree LayoutBox<'style>> {
+        if is_element(node, tag) {
+            return Some(node);
+        }
+
+        node.children
+            .iter()
+            .find_map(|child| find_element(child, tag))
+    }
+
+    fn collect_fragments(node: &LayoutBox<'_>, out: &mut Vec<TextFragment>) {
+        out.extend(node.text_fragments.iter().cloned());
+        for child in &node.children {
+            collect_fragments(child, out);
+        }
+    }
+
+    #[test]
+    fn inline_children_inside_inline_elements_are_not_anonymous_blocks() {
+        let styled = styled_tree(
+            r#"<p><a href="https://example.com">Learn <span>more</span> today</a></p>"#,
+        );
+        let layout = build_layout_tree(&styled);
+        let anchor = find_element(&layout, "a").unwrap();
+
+        assert!(matches!(anchor.box_type, BoxType::InlineNode(_)));
+        assert_eq!(anchor.children.len(), 3);
+        assert!(
+            anchor
+                .children
+                .iter()
+                .all(|child| matches!(child.box_type, BoxType::InlineNode(_)))
+        );
+        assert!(is_element(&anchor.children[1], "span"));
+    }
+
+    #[test]
+    fn nested_inline_fragments_share_the_same_line_when_there_is_room() {
+        let styled = styled_tree(
+            r#"<p><a href="https://example.com">Learn <span>more</span> today</a></p>"#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 500.0;
+        viewport.content.height = 600.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let mut fragments = Vec::new();
+        collect_fragments(&layout, &mut fragments);
+
+        let y_of = |text: &str| {
+            fragments
+                .iter()
+                .find(|frag| frag.text == text)
+                .map(|frag| frag.rect.y)
+                .unwrap()
+        };
+
+        let learn_y = y_of("Learn");
+        let more_y = y_of("more");
+        let today_y = y_of("today");
+
+        assert!((learn_y - more_y).abs() <= 0.5);
+        assert!((more_y - today_y).abs() <= 0.5);
+    }
 }
