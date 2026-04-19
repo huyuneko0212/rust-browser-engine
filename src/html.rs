@@ -10,6 +10,52 @@ pub fn parse(source: String) -> Node {
     normalize_document(nodes)
 }
 
+/// DOMツリーからmeta charsetを抽出（例："utf-8", "shift_jis"）
+pub fn extract_charset(node: &Node) -> Option<String> {
+    match &node.node_type {
+        NodeType::Element(ed) => {
+            // metaタグからcharsetを探す
+            if ed.tag_name == "meta" {
+                if let Some(charset) = ed.attributes.get("charset") {
+                    if !charset.is_empty() {
+                        return Some(charset.to_lowercase());
+                    }
+                }
+                // http-equiv="content-type" content="text/html; charset=..."の形式にも対応
+                if let Some(http_equiv) = ed.attributes.get("http-equiv") {
+                    if http_equiv.to_lowercase() == "content-type" {
+                        if let Some(content) = ed.attributes.get("content") {
+                            if let Some(charset_part) = content.split("charset=").nth(1) {
+                                let charset =
+                                    charset_part.trim().split(';').next().unwrap_or("").trim();
+                                if !charset.is_empty() {
+                                    return Some(charset.to_lowercase());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // 子ノードを再帰的に探索
+            for child in &node.children {
+                if let Some(charset) = extract_charset(child) {
+                    return Some(charset);
+                }
+            }
+        }
+        _ => {
+            // テキストノードなど
+            for child in &node.children {
+                if let Some(charset) = extract_charset(child) {
+                    return Some(charset);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 // =====================================================
 // html/head/body を補完して “実ブラウザっぽい” DOM にする
 // =====================================================
@@ -436,9 +482,28 @@ fn is_block_tag(tag_lc: &str) -> bool {
     // 小文字前提
     matches!(
         tag_lc,
-        "html" | "body" | "div" | "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol"
-            | "li" | "section" | "header" | "footer" | "main" | "article" | "nav" | "table"
-            | "form" | "pre"
+        "html"
+            | "body"
+            | "div"
+            | "p"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "ul"
+            | "ol"
+            | "li"
+            | "section"
+            | "header"
+            | "footer"
+            | "main"
+            | "article"
+            | "nav"
+            | "table"
+            | "form"
+            | "pre"
     )
 }
 

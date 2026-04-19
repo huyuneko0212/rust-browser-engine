@@ -78,6 +78,42 @@ impl Response {
         String::from_utf8_lossy(&self.body).to_string()
     }
 
+    /// HTTP Content-Type ヘッダから charset を抽出する
+    pub fn charset_from_header(&self) -> Option<String> {
+        self.content_type.as_ref().and_then(|ct| {
+            ct.split(';').skip(1).find_map(|part| {
+                let (name, value) = part.trim().split_once('=')?;
+                if !name.trim().eq_ignore_ascii_case("charset") {
+                    return None;
+                }
+
+                let charset = value.trim().trim_matches('"').trim_matches('\'');
+                if charset.is_empty() {
+                    None
+                } else {
+                    Some(charset.to_lowercase())
+                }
+            })
+        })
+    }
+
+    /// 指定された文字コードでボディをデコード
+    /// charsetは例："utf-8", "shift_jis", "euc-jp" など
+    pub fn body_text_with_charset(&self, charset: &str) -> String {
+        let (cow, _, had_errors) = encoding_rs::Encoding::for_label(charset.as_bytes())
+            .unwrap_or(encoding_rs::UTF_8)
+            .decode(&self.body);
+
+        if had_errors {
+            eprintln!(
+                "[http] Warning: charset '{}' decoding had errors, using lossy conversion",
+                charset
+            );
+        }
+
+        cow.to_string()
+    }
+
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers.get(&name.to_lowercase()).map(|s| s.as_str())
     }
@@ -360,4 +396,35 @@ fn guess_content_type_from_path(path: &str) -> Option<String> {
 
 fn debug_url(u: &URL) -> String {
     format!("{}://{}:{}{}", u.scheme, u.host, u.port, u.path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn response_with(content_type: Option<&str>, body: Vec<u8>) -> Response {
+        Response {
+            status_code: http_status::OK,
+            headers: HashMap::new(),
+            body,
+            content_type: content_type.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn extracts_charset_from_content_type_header() {
+        let response = response_with(Some("text/html; charset=Shift_JIS"), Vec::new());
+
+        assert_eq!(response.charset_from_header().as_deref(), Some("shift_jis"));
+    }
+
+    #[test]
+    fn decodes_shift_jis_body() {
+        let response = response_with(
+            Some("text/html; charset=Shift_JIS"),
+            vec![0x90, 0xa2, 0x8a, 0x45],
+        );
+
+        assert_eq!(response.body_text_with_charset("shift_jis"), "世界");
+    }
 }

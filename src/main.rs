@@ -326,7 +326,17 @@ fn fetch_page_document(url: &url::URL) -> Option<PageDocument> {
     }
     println!("HTML status: {}", response.status_code);
 
-    let dom_root = html::parse(response.body_text_lossy());
+    let charset = response
+        .charset_from_header()
+        .or_else(|| {
+            let temp_dom = html::parse(response.body_text_lossy());
+            html::extract_charset(&temp_dom)
+        })
+        .unwrap_or_else(|| "utf-8".to_string());
+    println!("Detected charset: {}", charset);
+
+    let html_text = response.body_text_with_charset(&charset);
+    let dom_root = html::parse(html_text);
     println!("DOM生成完了");
 
     // 1) 画像の自然サイズ cache（正規化 key 統一）
