@@ -23,6 +23,27 @@ pub enum Display {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Float {
+    None,
+    Left,
+    Right,
+}
+
+impl Float {
+    pub fn is_floating(self) -> bool {
+        !matches!(self, Float::None)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Clear {
+    None,
+    Left,
+    Right,
+    Both,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Position {
     Static,
     Relative,
@@ -98,6 +119,25 @@ impl StyledNode {
             Some("fixed") => Position::Fixed,
             Some("sticky") => Position::Sticky,
             _ => Position::Static,
+        }
+    }
+
+    /// CSS float の最小実装。
+    /// absolute/fixed 側の無効化は layout 側で行う。
+    pub fn float(&self) -> Float {
+        match self.value("float").map(|s| s.trim()) {
+            Some("left") => Float::Left,
+            Some("right") => Float::Right,
+            _ => Float::None,
+        }
+    }
+
+    pub fn clear(&self) -> Clear {
+        match self.value("clear").map(|s| s.trim()) {
+            Some("left") => Clear::Left,
+            Some("right") => Clear::Right,
+            Some("both") => Clear::Both,
+            _ => Clear::None,
         }
     }
 

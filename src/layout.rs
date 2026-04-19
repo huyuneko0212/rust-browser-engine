@@ -1,5 +1,5 @@
 use crate::constants::layout as layout_constants;
-use crate::style::{Display, Position, StyledNode};
+use crate::style::{Clear, Display, Float, Position, StyledNode};
 use fontdue::Font;
 
 pub trait ImageSizeProvider {
@@ -11,7 +11,7 @@ pub trait ImageSizeProvider {
     fn natural_size_px(&self, key: &str) -> Option<(u32, u32)>;
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -103,6 +103,25 @@ impl Dimensions {
             + self.margin.bottom
     }
 
+    pub fn margin_box_width(&self) -> f32 {
+        self.margin.left
+            + self.border.left
+            + self.padding.left
+            + self.content.width
+            + self.padding.right
+            + self.border.right
+            + self.margin.right
+    }
+
+    fn margin_box_rect(&self) -> Rect {
+        Rect {
+            x: self.content.x - self.padding.left - self.border.left - self.margin.left,
+            y: self.content.y - self.padding.top - self.border.top - self.margin.top,
+            width: self.margin_box_width(),
+            height: self.margin_box_height(),
+        }
+    }
+
     fn padding_box_as_containing_block(&self) -> Dimensions {
         let mut containing = Dimensions::default();
         containing.content.x = self.content.x - self.padding.left;
@@ -134,6 +153,119 @@ struct Insets {
     left: Option<f32>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PlacedFloat {
+    side: Float,
+    rect: Rect,
+}
+
+#[derive(Debug, Default, Clone)]
+struct FloatContext {
+    floats: Vec<PlacedFloat>,
+}
+
+impl FloatContext {
+    fn add(&mut self, side: Float, rect: Rect) {
+        self.floats.push(PlacedFloat { side, rect });
+    }
+
+    fn available_at(&self, container_x: f32, container_w: f32, y: f32) -> (f32, f32) {
+        let mut left = container_x;
+        let mut right = container_x + container_w;
+
+        for placed in &self.floats {
+            if !float_overlaps_y(placed.rect, y) {
+                continue;
+            }
+
+            match placed.side {
+                Float::Left => left = left.max(placed.rect.x + placed.rect.width),
+                Float::Right => right = right.min(placed.rect.x),
+                Float::None => {}
+            }
+        }
+
+        (left, (right - left).max(0.0))
+    }
+
+    fn find_available(
+        &self,
+        container_x: f32,
+        container_w: f32,
+        start_y: f32,
+        needed_w: f32,
+    ) -> (f32, f32, f32) {
+        let mut y = start_y;
+
+        loop {
+            let (x, width) = self.available_at(container_x, container_w, y);
+            if width + 0.5 >= needed_w || !self.has_active_float_at(y) {
+                return (y, x, width);
+            }
+
+            if let Some(next_y) = self.next_active_float_bottom(y) {
+                if next_y <= y + 0.5 {
+                    return (y, x, width);
+                }
+                y = next_y;
+            } else {
+                return (y, x, width);
+            }
+        }
+    }
+
+    fn clear_y(&self, y: f32, clear: Clear) -> f32 {
+        if matches!(clear, Clear::None) {
+            return y;
+        }
+
+        self.floats.iter().fold(y, |next_y, placed| {
+            if !clear_applies_to_float(clear, placed.side) {
+                return next_y;
+            }
+
+            let bottom = placed.rect.y + placed.rect.height;
+            if bottom > next_y { bottom } else { next_y }
+        })
+    }
+
+    fn max_bottom(&self) -> Option<f32> {
+        self.floats
+            .iter()
+            .map(|placed| placed.rect.y + placed.rect.height)
+            .reduce(f32::max)
+    }
+
+    fn has_active_float_at(&self, y: f32) -> bool {
+        self.floats
+            .iter()
+            .any(|placed| float_overlaps_y(placed.rect, y))
+    }
+
+    fn next_active_float_bottom(&self, y: f32) -> Option<f32> {
+        self.floats
+            .iter()
+            .filter(|placed| float_overlaps_y(placed.rect, y))
+            .map(|placed| placed.rect.y + placed.rect.height)
+            .filter(|bottom| *bottom > y + 0.5)
+            .reduce(f32::min)
+    }
+}
+
+fn float_overlaps_y(rect: Rect, y: f32) -> bool {
+    y >= rect.y && y < rect.y + rect.height
+}
+
+fn clear_applies_to_float(clear: Clear, side: Float) -> bool {
+    matches!(
+        (clear, side),
+        (Clear::Both, Float::Left)
+            | (Clear::Both, Float::Right)
+            | (Clear::Left, Float::Left)
+            | (Clear::Right, Float::Right)
+    )
+}
+
 #[derive(Debug)]
 pub struct LayoutBox<'a> {
     pub box_type: BoxType<'a>,
@@ -163,6 +295,22 @@ impl<'a> LayoutBox<'a> {
         self.get_style_node()
             .map(|node| node.position())
             .unwrap_or(Position::Static)
+    }
+
+    fn node_float(&self) -> Float {
+        if self.node_position().is_out_of_flow() {
+            return Float::None;
+        }
+
+        self.get_style_node()
+            .map(|node| node.float())
+            .unwrap_or(Float::None)
+    }
+
+    fn node_clear(&self) -> Clear {
+        self.get_style_node()
+            .map(|node| node.clear())
+            .unwrap_or(Clear::None)
     }
 
     pub fn layout_with_font(
@@ -222,6 +370,7 @@ impl<'a> LayoutBox<'a> {
         img_cache: &dyn ImageSizeProvider,
     ) {
         let position = self.node_position();
+        let float = self.node_float();
         let out_of_flow = position.is_out_of_flow();
         let positioning_block = if position == Position::Fixed {
             viewport.clone()
@@ -237,6 +386,8 @@ impl<'a> LayoutBox<'a> {
         self.calculate_block_model(model_block.clone());
         if out_of_flow {
             self.calculate_positioned_block_width(positioning_block.clone());
+        } else if float.is_floating() {
+            self.calculate_float_block_width(containing_block.clone(), img_cache);
         } else {
             self.calculate_block_width(containing_block.clone());
         }
@@ -731,6 +882,42 @@ impl<'a> LayoutBox<'a> {
         d.content.width = available.max(0.0);
     }
 
+    fn calculate_float_block_width(
+        &mut self,
+        containing_block: Dimensions,
+        img_cache: &dyn ImageSizeProvider,
+    ) {
+        let width_str = self
+            .get_style_node()
+            .and_then(|s| s.value("width"))
+            .cloned();
+
+        self.calculate_block_width(containing_block.clone());
+
+        if width_str.is_some() {
+            return;
+        }
+
+        if let Some(sn) = self.get_style_node() {
+            if let crate::dom::NodeType::Element(ed) = &sn.node.node_type {
+                if ed.tag_name == "img" {
+                    let (iw, _) = img_intrinsic_size_px(sn, img_cache);
+                    let d = &mut self.dimensions;
+                    let available = containing_block.content.width
+                        - d.margin.left
+                        - d.margin.right
+                        - d.padding.left
+                        - d.padding.right
+                        - d.border.left
+                        - d.border.right;
+                    d.content.width = iw
+                        .max(layout_constants::MIN_LAYOUT_SIZE_PX)
+                        .min(available.max(layout_constants::MIN_LAYOUT_SIZE_PX));
+                }
+            }
+        }
+    }
+
     fn calculate_block_position(&mut self, containing_block: Dimensions) {
         let d = &mut self.dimensions;
 
@@ -746,34 +933,107 @@ impl<'a> LayoutBox<'a> {
         img_cache: &dyn ImageSizeProvider,
     ) {
         let mut y = self.dimensions.content.y;
+        let container_x = self.dimensions.content.x;
+        let container_w = self.dimensions.content.width;
+        let mut floats = FloatContext::default();
 
         for child in &mut self.children {
+            let child_out_of_flow = child.node_position().is_out_of_flow();
+            let child_float = child.node_float();
+            let clear = child.node_clear();
+
+            if !child_out_of_flow {
+                y = floats.clear_y(y, clear);
+            }
+
+            let (flow_y, flow_x, flow_w) = floats.find_available(
+                container_x,
+                container_w,
+                y,
+                layout_constants::MIN_LAYOUT_SIZE_PX,
+            );
+
             let mut cb = Dimensions::default();
-            cb.content.x = self.dimensions.content.x;
-            cb.content.y = y;
-            cb.content.width = self.dimensions.content.width;
+            cb.content.x = if child_out_of_flow {
+                container_x
+            } else {
+                flow_x
+            };
+            cb.content.y = if child_out_of_flow { y } else { flow_y };
+            cb.content.width = if child_out_of_flow {
+                container_w
+            } else {
+                flow_w.max(layout_constants::MIN_LAYOUT_SIZE_PX)
+            };
             cb.content.height = self
                 .dimensions
                 .content
                 .height
                 .max(layout_constants::MIN_LAYOUT_SIZE_PX);
 
-            let child_out_of_flow = child.node_position().is_out_of_flow();
-
             child.layout_with_context(
-                cb,
+                cb.clone(),
                 positioned_containing_block.clone(),
                 viewport.clone(),
                 font,
                 img_cache,
             );
 
-            if !child_out_of_flow {
-                y += child.dimensions.margin_box_height().max(0.0);
+            if child_out_of_flow {
+                continue;
             }
+
+            if child_float.is_floating() {
+                let margin_w = child
+                    .dimensions
+                    .margin_box_width()
+                    .max(layout_constants::MIN_LAYOUT_SIZE_PX);
+                let (float_y, available_x, available_w) =
+                    floats.find_available(container_x, container_w, y, margin_w);
+                let margin_x = match child_float {
+                    Float::Left => available_x,
+                    Float::Right => available_x + available_w - margin_w,
+                    Float::None => available_x,
+                };
+
+                child.shift_to_margin_box(margin_x, float_y);
+                floats.add(child_float, child.dimensions.margin_box_rect());
+                continue;
+            }
+
+            let mut placed_y = flow_y;
+            if child.dimensions.margin_box_width() > flow_w + 0.5 {
+                let (retry_y, retry_x, retry_w) = floats.find_available(
+                    container_x,
+                    container_w,
+                    flow_y,
+                    child.dimensions.margin_box_width(),
+                );
+
+                if retry_y > flow_y + 0.5 || (retry_w - flow_w).abs() > 0.5 {
+                    cb.content.x = retry_x;
+                    cb.content.y = retry_y;
+                    cb.content.width = retry_w.max(layout_constants::MIN_LAYOUT_SIZE_PX);
+
+                    child.layout_with_context(
+                        cb,
+                        positioned_containing_block.clone(),
+                        viewport.clone(),
+                        font,
+                        img_cache,
+                    );
+
+                    placed_y = retry_y;
+                }
+            }
+
+            y = placed_y + child.dimensions.margin_box_height().max(0.0);
         }
 
-        self.dimensions.content.height = (y - self.dimensions.content.y).max(0.0);
+        let flow_bottom = y;
+        let float_bottom = floats.max_bottom().unwrap_or(self.dimensions.content.y);
+        self.dimensions.content.height =
+            (flow_bottom.max(float_bottom) - self.dimensions.content.y).max(0.0);
     }
 
     fn calculate_block_height_with_font(&mut self, font: &Font, img_cache: &dyn ImageSizeProvider) {
@@ -1163,6 +1423,11 @@ impl<'a> LayoutBox<'a> {
         }
     }
 
+    fn shift_to_margin_box(&mut self, x: f32, y: f32) {
+        let current = self.dimensions.margin_box_rect();
+        self.shift_tree(x - current.x, y - current.y);
+    }
+
     fn positioned_descendant_containing_block(&self) -> Dimensions {
         let mut containing = self.dimensions.padding_box_as_containing_block();
 
@@ -1250,7 +1515,9 @@ pub fn build_layout_tree(style_node: &StyledNode) -> LayoutBox<'_> {
 
 fn layout_display_for(style_node: &StyledNode) -> Display {
     let display = style_node.display();
-    if display != Display::None && style_node.position().is_out_of_flow() {
+    if display != Display::None
+        && (style_node.position().is_out_of_flow() || style_node.float().is_floating())
+    {
         Display::Block
     } else {
         display
@@ -2140,5 +2407,65 @@ mod tests {
         assert!((abs.dimensions.content.x - (padding_box_x + 20.0)).abs() <= 0.5);
         assert!((abs.dimensions.content.y - (padding_box_y + 15.0)).abs() <= 0.5);
         assert!((normal.dimensions.content.y - container.dimensions.content.y).abs() <= 0.5);
+    }
+
+    #[test]
+    fn left_float_reduces_following_flow_space_and_clear_moves_below_it() {
+        let styled = styled_tree_with_css(
+            r#"
+            <div id="container">
+                <div id="float"></div>
+                <div id="normal"></div>
+                <div id="clear"></div>
+            </div>
+            "#,
+            r#"
+            #container { display: block; width: 300px; margin: 0; padding: 0; }
+            #float {
+                display: block;
+                float: left;
+                width: 80px;
+                height: 60px;
+                margin: 0;
+                padding: 0;
+            }
+            #normal {
+                display: block;
+                width: 100px;
+                height: 20px;
+                margin: 0;
+                padding: 0;
+            }
+            #clear {
+                display: block;
+                clear: both;
+                width: 100px;
+                height: 20px;
+                margin: 0;
+                padding: 0;
+            }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 400.0;
+        viewport.content.height = 300.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let container = find_element_by_id(&layout, "container").unwrap();
+        let float = find_element_by_id(&layout, "float").unwrap();
+        let normal = find_element_by_id(&layout, "normal").unwrap();
+        let clear = find_element_by_id(&layout, "clear").unwrap();
+
+        assert!((float.dimensions.content.x - container.dimensions.content.x).abs() <= 0.5);
+        assert!((float.dimensions.content.y - container.dimensions.content.y).abs() <= 0.5);
+        assert!(
+            (normal.dimensions.content.x - (container.dimensions.content.x + 80.0)).abs() <= 0.5
+        );
+        assert!((normal.dimensions.content.y - container.dimensions.content.y).abs() <= 0.5);
+        assert!(
+            (clear.dimensions.content.y - (container.dimensions.content.y + 60.0)).abs() <= 0.5
+        );
     }
 }

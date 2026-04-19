@@ -1,0 +1,120 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>float layout test</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #f7f7f8;
+      color: #111111;
+      font-size: 16px;
+      line-height: 1.35;
+    }
+
+    body {
+      padding: 20px;
+    }
+
+    h1 {
+      margin: 0 0 16px 0;
+      font-size: 28px;
+    }
+
+    h2 {
+      margin: 24px 0 10px 0;
+      font-size: 20px;
+    }
+
+    p {
+      margin: 8px 0;
+    }
+
+    .section {
+      margin: 0 0 22px 0;
+      padding: 14px;
+      background: #ffffff;
+      border: 2px solid #dddddd;
+      border-radius: 6px;
+    }
+
+    .float-left {
+      float: left;
+      width: 150px;
+      height: 150px;
+      margin: 0 16px 10px 0;
+      border: 3px solid #2aa198;
+      background: #eef9f2;
+    }
+
+    .float-right {
+      float: right;
+      width: 170px;
+      height: 100px;
+      margin: 0 0 10px 16px;
+      padding: 10px;
+      border: 3px solid #5a3ea1;
+      background: #d4c2fc;
+    }
+
+    .note {
+      padding: 8px;
+      background: #d7f0ff;
+      border: 2px solid #3973ac;
+    }
+
+    .clear {
+      clear: both;
+      margin-top: 12px;
+      padding: 10px;
+      background: #ffdd57;
+      border: 2px solid #111111;
+    }
+
+    .box {
+      width: 130px;
+      height: 72px;
+      padding: 10px;
+      background: #ff9f80;
+      border: 2px solid #8a2f1b;
+    }
+  </style>
+</head>
+<body>
+  <h1>CSS float layout test</h1>
+  <p>This page checks float left, float right, and clear behavior.</p>
+
+  <div class="section">
+    <h2>float left image</h2>
+    <img class="float-left" src="150x150.png" alt="left floated image">
+    <p>
+      This paragraph should start to the right of the floated image. The browser engine now keeps
+      the floating box on the left side and gives the following flow content the remaining width.
+      More text is included here so line wrapping is easy to see beside the image.
+    </p>
+    <p class="clear">clear: both should move this yellow block below the floated image.</p>
+  </div>
+
+  <div class="section">
+    <h2>float right box</h2>
+    <div class="float-right">float right box</div>
+    <p class="note">
+      This blue block should use the space to the left of the right floated box. The purple box
+      stays attached to the right edge while this normal flow content is laid out beside it.
+    </p>
+    <div class="clear">clear: both after a right float</div>
+  </div>
+
+  <div class="section">
+    <h2>two floats</h2>
+    <div class="float-left box">left float</div>
+    <div class="float-right box">right float</div>
+    <p>
+      This text should be placed between the two floated boxes when there is enough horizontal
+      room. If the available width becomes too narrow, following content moves below the floats.
+    </p>
+    <div class="clear">clear: both after two floats</div>
+  </div>
+</body>
+</html>
