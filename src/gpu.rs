@@ -244,15 +244,6 @@ enum PreparedDrawCommand {
     Image { start: u32, count: u32, key: String },
 }
 
-fn display_item_fixed(item: &DisplayItem) -> bool {
-    match item {
-        DisplayItem::Rect(r) => r.fixed,
-        DisplayItem::Border(b) => b.fixed,
-        DisplayItem::Text(t) => t.fixed,
-        DisplayItem::Image(im) => im.fixed,
-    }
-}
-
 pub struct GPU<'a> {
     pub surface: Surface<'a>,
     pub device: Device,
@@ -614,23 +605,16 @@ impl<'a> GPU<'a> {
         let mut rect_verts = Vec::<RectVertex>::new();
         let mut image_verts = Vec::<ImageVertex>::new();
         let mut text_verts = Vec::<TextVertex>::new();
-        let mut normal_commands = Vec::<PreparedDrawCommand>::new();
-        let mut fixed_commands = Vec::<PreparedDrawCommand>::new();
+        let mut draw_commands = Vec::<PreparedDrawCommand>::new();
 
         for item in items {
-            let commands = if display_item_fixed(item) {
-                &mut fixed_commands
-            } else {
-                &mut normal_commands
-            };
-
             match item {
                 DisplayItem::Rect(r) => {
                     let start = rect_verts.len();
                     rect_verts.extend(self.rect_vertices(std::slice::from_ref(r), scroll_y));
                     let count = rect_verts.len() - start;
                     if count > 0 {
-                        commands.push(PreparedDrawCommand::Rect {
+                        draw_commands.push(PreparedDrawCommand::Rect {
                             start: start as u32,
                             count: count as u32,
                         });
@@ -641,7 +625,7 @@ impl<'a> GPU<'a> {
                     rect_verts.extend(self.border_vertices(std::slice::from_ref(b), scroll_y));
                     let count = rect_verts.len() - start;
                     if count > 0 {
-                        commands.push(PreparedDrawCommand::Rect {
+                        draw_commands.push(PreparedDrawCommand::Rect {
                             start: start as u32,
                             count: count as u32,
                         });
@@ -653,7 +637,7 @@ impl<'a> GPU<'a> {
                     text_verts.extend(verts);
                     let count = text_verts.len() - start;
                     if count > 0 {
-                        commands.push(PreparedDrawCommand::Text {
+                        draw_commands.push(PreparedDrawCommand::Text {
                             start: start as u32,
                             count: count as u32,
                         });
@@ -668,7 +652,7 @@ impl<'a> GPU<'a> {
                     image_verts.extend(self.image_vertices(std::slice::from_ref(im), scroll_y));
                     let count = image_verts.len() - start;
                     if count > 0 {
-                        commands.push(PreparedDrawCommand::Image {
+                        draw_commands.push(PreparedDrawCommand::Image {
                             start: start as u32,
                             count: count as u32,
                             key: im.key.clone(),
@@ -728,7 +712,7 @@ impl<'a> GPU<'a> {
                 timestamp_writes: None,
             });
 
-            for command in normal_commands.iter().chain(fixed_commands.iter()) {
+            for command in &draw_commands {
                 match command {
                     PreparedDrawCommand::Rect { start, count } => {
                         pass.set_pipeline(&self.rect_pipeline);

@@ -84,33 +84,32 @@ pub fn build_display_list(
     base_url: &crate::url::URL,
 ) {
     out.clear();
-    walk(root, out, font, base_url, false);
+    paint_stacking_context(root, out, font, base_url, false);
     merge_adjacent_link_underlines(out);
 }
 
-fn walk(
+fn paint_stacking_context(
     node: &LayoutBox<'_>,
     out: &mut Vec<DisplayItem>,
     font: &Font,
     base_url: &crate::url::URL,
     fixed_context: bool,
 ) {
-    let fixed = fixed_context
-        || node
-            .get_style_node()
-            .map(|sn| sn.position() == Position::Fixed)
-            .unwrap_or(false);
-
-    // style/script/head/title/meta/link は描画しない（配下も止める）
-    if let Some(sn) = node.get_style_node() {
-        if let crate::dom::NodeType::Element(ed) = &sn.node.node_type {
-            match ed.tag_name.as_str() {
-                "style" | "script" | "head" | "title" | "meta" | "link" => return,
-                _ => {}
-            }
-        }
+    if skips_display_subtree(node) {
+        return;
     }
 
+    let fixed = node_fixed_context(node, fixed_context);
+    paint_node_contents(node, out, base_url, fixed);
+    paint_stacking_context_children(node, out, font, base_url, fixed);
+}
+
+fn paint_node_contents(
+    node: &LayoutBox<'_>,
+    out: &mut Vec<DisplayItem>,
+    base_url: &crate::url::URL,
+    fixed: bool,
+) {
     // --------------------------------------------------------
     // inline element の background を padding込みで塗る
     // （inline border は未対応なので背景だけ）
@@ -398,13 +397,210 @@ fn walk(
             }
         }
     }
+}
 
-    let mut children: Vec<(usize, &LayoutBox<'_>)> = node.children.iter().enumerate().collect();
-    children.sort_by(|(a_index, a), (b_index, b)| child_paint_order(*a_index, a, *b_index, b));
+#[derive(Debug)]
+struct StackingContextPaint {
+    level: i32,
+    order: usize,
+    items: Vec<DisplayItem>,
+}
 
-    for (_, child) in children {
-        walk(child, out, font, base_url, fixed);
+#[derive(Debug, Default)]
+struct StackingContextCollector {
+    normal_items: Vec<DisplayItem>,
+    child_contexts: Vec<StackingContextPaint>,
+    next_order: usize,
+}
+
+impl StackingContextCollector {
+    fn take_order(&mut self) -> usize {
+        let order = self.next_order;
+        self.next_order += 1;
+        order
     }
+}
+
+fn paint_stacking_context_children(
+    node: &LayoutBox<'_>,
+    out: &mut Vec<DisplayItem>,
+    font: &Font,
+    base_url: &crate::url::URL,
+    fixed_context: bool,
+) {
+    let mut collector = StackingContextCollector::default();
+
+    for child in &node.children {
+        collect_into_stacking_context(child, &mut collector, font, base_url, fixed_context);
+    }
+
+    append_collected_layers(out, collector);
+}
+
+fn append_collected_layers(out: &mut Vec<DisplayItem>, mut collector: StackingContextCollector) {
+    collector
+        .child_contexts
+        .sort_by(|a, b| a.level.cmp(&b.level).then_with(|| a.order.cmp(&b.order)));
+
+    extend_matching_contexts(out, &collector.child_contexts, |level| level < 0);
+    out.extend(collector.normal_items);
+    extend_matching_contexts(out, &collector.child_contexts, |level| level == 0);
+    extend_matching_contexts(out, &collector.child_contexts, |level| level > 0);
+}
+
+fn collect_into_stacking_context(
+    node: &LayoutBox<'_>,
+    collector: &mut StackingContextCollector,
+    font: &Font,
+    base_url: &crate::url::URL,
+    fixed_context: bool,
+) {
+    if skips_display_subtree(node) {
+        return;
+    }
+
+    let fixed = node_fixed_context(node, fixed_context);
+
+    if creates_stacking_context(node) {
+        let order = collector.take_order();
+        let mut items = Vec::new();
+        paint_stacking_context(node, &mut items, font, base_url, fixed_context);
+
+        collector.child_contexts.push(StackingContextPaint {
+            level: stacking_context_level(node),
+            order,
+            items,
+        });
+        return;
+    }
+
+    if paints_in_positioned_layer(node) {
+        let order = collector.take_order();
+        let items = collect_positioned_layer_items(node, collector, font, base_url, fixed_context);
+
+        collector.child_contexts.push(StackingContextPaint {
+            level: 0,
+            order,
+            items,
+        });
+        return;
+    }
+
+    paint_node_contents(node, &mut collector.normal_items, base_url, fixed);
+
+    for child in &node.children {
+        collect_into_stacking_context(child, collector, font, base_url, fixed);
+    }
+}
+
+fn collect_positioned_layer_items(
+    node: &LayoutBox<'_>,
+    outer_collector: &mut StackingContextCollector,
+    font: &Font,
+    base_url: &crate::url::URL,
+    fixed_context: bool,
+) -> Vec<DisplayItem> {
+    let fixed = node_fixed_context(node, fixed_context);
+    let mut items = Vec::new();
+    paint_node_contents(node, &mut items, base_url, fixed);
+
+    let mut local_collector = StackingContextCollector::default();
+    for child in &node.children {
+        collect_into_positioned_layer(
+            child,
+            &mut local_collector,
+            outer_collector,
+            font,
+            base_url,
+            fixed,
+        );
+    }
+
+    append_collected_layers(&mut items, local_collector);
+    items
+}
+
+fn collect_into_positioned_layer(
+    node: &LayoutBox<'_>,
+    local_collector: &mut StackingContextCollector,
+    outer_collector: &mut StackingContextCollector,
+    font: &Font,
+    base_url: &crate::url::URL,
+    fixed_context: bool,
+) {
+    if skips_display_subtree(node) {
+        return;
+    }
+
+    let fixed = node_fixed_context(node, fixed_context);
+
+    if creates_stacking_context(node) {
+        let order = outer_collector.take_order();
+        let mut items = Vec::new();
+        paint_stacking_context(node, &mut items, font, base_url, fixed_context);
+
+        outer_collector.child_contexts.push(StackingContextPaint {
+            level: stacking_context_level(node),
+            order,
+            items,
+        });
+        return;
+    }
+
+    if paints_in_positioned_layer(node) {
+        let order = local_collector.take_order();
+        let items =
+            collect_positioned_layer_items(node, outer_collector, font, base_url, fixed_context);
+
+        local_collector.child_contexts.push(StackingContextPaint {
+            level: 0,
+            order,
+            items,
+        });
+        return;
+    }
+
+    paint_node_contents(node, &mut local_collector.normal_items, base_url, fixed);
+
+    for child in &node.children {
+        collect_into_positioned_layer(
+            child,
+            local_collector,
+            outer_collector,
+            font,
+            base_url,
+            fixed,
+        );
+    }
+}
+
+fn extend_matching_contexts(
+    out: &mut Vec<DisplayItem>,
+    contexts: &[StackingContextPaint],
+    matches_level: impl Fn(i32) -> bool,
+) {
+    for context in contexts {
+        if matches_level(context.level) {
+            out.extend(context.items.iter().cloned());
+        }
+    }
+}
+
+fn skips_display_subtree(node: &LayoutBox<'_>) -> bool {
+    node.get_style_node()
+        .and_then(|sn| match &sn.node.node_type {
+            crate::dom::NodeType::Element(ed) => Some(ed.tag_name.as_str()),
+            _ => None,
+        })
+        .is_some_and(|tag| matches!(tag, "style" | "script" | "head" | "title" | "meta" | "link"))
+}
+
+fn node_fixed_context(node: &LayoutBox<'_>, fixed_context: bool) -> bool {
+    fixed_context
+        || node
+            .get_style_node()
+            .map(|sn| sn.position() == Position::Fixed)
+            .unwrap_or(false)
 }
 
 #[derive(Debug, Clone)]
@@ -526,40 +722,26 @@ fn nearly_equal(a: f32, b: f32) -> bool {
     (a - b).abs() <= 0.5
 }
 
-fn child_paint_order(
-    a_index: usize,
-    a: &LayoutBox<'_>,
-    b_index: usize,
-    b: &LayoutBox<'_>,
-) -> Ordering {
-    let a_stack = paint_stack_level(a);
-    let b_stack = paint_stack_level(b);
-
-    a_stack.level.cmp(&b_stack.level).then_with(|| {
-        if !a_stack.explicit && !b_stack.explicit {
-            b_index.cmp(&a_index)
-        } else {
-            a_index.cmp(&b_index)
-        }
-    })
+fn creates_stacking_context(node: &LayoutBox<'_>) -> bool {
+    node.get_style_node()
+        .map(|sn| {
+            let position = sn.position();
+            matches!(position, Position::Fixed | Position::Sticky)
+                || (position.is_positioned() && sn.z_index().stack_level().is_some())
+        })
+        .unwrap_or(false)
 }
 
-#[derive(Debug, Clone, Copy)]
-struct PaintStackLevel {
-    level: i32,
-    explicit: bool,
+fn paints_in_positioned_layer(node: &LayoutBox<'_>) -> bool {
+    node.get_style_node()
+        .map(|sn| sn.position().is_positioned())
+        .unwrap_or(false)
 }
 
-fn paint_stack_level(node: &LayoutBox<'_>) -> PaintStackLevel {
-    let explicit_level = node
-        .get_style_node()
-        .filter(|sn| sn.position().is_positioned())
-        .and_then(|sn| sn.z_index().stack_level());
-
-    PaintStackLevel {
-        level: explicit_level.unwrap_or(0),
-        explicit: explicit_level.is_some(),
-    }
+fn stacking_context_level(node: &LayoutBox<'_>) -> i32 {
+    node.get_style_node()
+        .and_then(|sn| sn.z_index().stack_level())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -622,6 +804,13 @@ mod tests {
             link_id: Some(link_id),
             fixed: false,
         })
+    }
+
+    fn rect_index(items: &[DisplayItem], color: [f32; 4]) -> usize {
+        items
+            .iter()
+            .position(|item| matches!(item, DisplayItem::Rect(rect) if rect.color == color))
+            .expect("colored rect should be painted")
     }
 
     #[test]
@@ -697,20 +886,14 @@ mod tests {
             "#,
         );
 
-        let red_index = items
-            .iter()
-            .position(|item| matches!(item, DisplayItem::Rect(rect) if rect.color == color::RED))
-            .expect("red rect should be painted");
-        let blue_index = items
-            .iter()
-            .position(|item| matches!(item, DisplayItem::Rect(rect) if rect.color == color::BLUE))
-            .expect("blue rect should be painted");
+        let red_index = rect_index(&items, color::RED);
+        let blue_index = rect_index(&items, color::BLUE);
 
         assert!(blue_index < red_index);
     }
 
     #[test]
-    fn auto_z_index_uses_reversed_implicit_sibling_order() {
+    fn auto_z_index_keeps_tree_order_for_positioned_siblings() {
         let items = display_list_for(
             r#"
             <div id="container">
@@ -748,16 +931,169 @@ mod tests {
             "#,
         );
 
-        let red_index = items
-            .iter()
-            .position(|item| matches!(item, DisplayItem::Rect(rect) if rect.color == color::RED))
-            .expect("red rect should be painted");
-        let blue_index = items
-            .iter()
-            .position(|item| matches!(item, DisplayItem::Rect(rect) if rect.color == color::BLUE))
-            .expect("blue rect should be painted");
+        let red_index = rect_index(&items, color::RED);
+        let blue_index = rect_index(&items, color::BLUE);
+
+        assert!(red_index < blue_index);
+    }
+
+    #[test]
+    fn positioned_auto_paints_after_in_flow_sibling() {
+        let items = display_list_for(
+            r#"
+            <div id="container">
+                <div id="abs"></div>
+                <div id="normal"></div>
+            </div>
+            "#,
+            r#"
+            #container {
+                display: block;
+                position: relative;
+                width: 200px;
+                height: 100px;
+                margin: 0;
+                padding: 0;
+            }
+            #abs {
+                display: block;
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100px;
+                height: 100px;
+                background: red;
+            }
+            #normal {
+                display: block;
+                width: 100px;
+                height: 100px;
+                margin: 0;
+                padding: 0;
+                background: blue;
+            }
+            "#,
+        );
+
+        let red_index = rect_index(&items, color::RED);
+        let blue_index = rect_index(&items, color::BLUE);
 
         assert!(blue_index < red_index);
+    }
+
+    #[test]
+    fn child_context_inside_non_context_parent_participates_in_ancestor_context() {
+        let items = display_list_for(
+            r#"
+            <div id="container">
+                <div id="parent">
+                    <div id="inner"></div>
+                </div>
+                <div id="sibling"></div>
+            </div>
+            "#,
+            r#"
+            #container {
+                display: block;
+                position: relative;
+                width: 200px;
+                height: 100px;
+                margin: 0;
+                padding: 0;
+            }
+            #parent {
+                display: block;
+                position: relative;
+                width: 100px;
+                height: 100px;
+                margin: 0;
+                padding: 0;
+            }
+            #inner {
+                display: block;
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100px;
+                height: 100px;
+                background: red;
+                z-index: 10;
+            }
+            #sibling {
+                display: block;
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100px;
+                height: 100px;
+                background: blue;
+                z-index: 1;
+            }
+            "#,
+        );
+
+        let red_index = rect_index(&items, color::RED);
+        let blue_index = rect_index(&items, color::BLUE);
+
+        assert!(blue_index < red_index);
+    }
+
+    #[test]
+    fn stacking_context_paints_atomically_against_sibling_context() {
+        let items = display_list_for(
+            r#"
+            <div id="container">
+                <div id="parent">
+                    <div id="inner"></div>
+                </div>
+                <div id="sibling"></div>
+            </div>
+            "#,
+            r#"
+            #container {
+                display: block;
+                position: relative;
+                width: 200px;
+                height: 100px;
+                margin: 0;
+                padding: 0;
+            }
+            #parent {
+                display: block;
+                position: relative;
+                z-index: 1;
+                width: 100px;
+                height: 100px;
+                margin: 0;
+                padding: 0;
+            }
+            #inner {
+                display: block;
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100px;
+                height: 100px;
+                background: red;
+                z-index: 10;
+            }
+            #sibling {
+                display: block;
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100px;
+                height: 100px;
+                background: blue;
+                z-index: 2;
+            }
+            "#,
+        );
+
+        let red_index = rect_index(&items, color::RED);
+        let blue_index = rect_index(&items, color::BLUE);
+
+        assert!(red_index < blue_index);
     }
 }
 

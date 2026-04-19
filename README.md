@@ -93,7 +93,7 @@ CSS 適用、レイアウト計算、display list 生成、GPU 描画までを�
 - `width`, `height`, `margin: auto` の一部
 - `position: relative` / `absolute` / `fixed` と `top` / `right` / `bottom` / `left` / `inset`
 - `float: left` / `right` と `clear: left` / `right` / `both` の簡易実装
-- positioned 要素の `z-index` による簡易的な重ね順制御
+- stacking context ベースの positioned 要素 `z-index` 重ね順制御
 - 画像の CSS サイズ、HTML 属性サイズ、自然サイズの反映
 - `px`, `%`, `vw`, `vh` の長さ解釈
 
@@ -160,7 +160,7 @@ CSS 適用、レイアウト計算、display list 生成、GPU 描画までを�
 - flex / grid / table layout
 - `position: sticky` のスクロール追従
 - 実ブラウザ水準の複雑な float 回り込み
-- 実ブラウザ水準の複雑な stacking context
+- `opacity` / `transform` などを含む実ブラウザ水準の stacking context 生成条件
 - inline 要素の border 描画
 - `font-family` に応じた実フォント切り替え
 

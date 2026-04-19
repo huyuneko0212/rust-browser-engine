@@ -107,6 +107,29 @@
       background: #d4c2fc;
       border: 2px solid #5a3ea1;
     }
+
+    .context-parent {
+      left: 44px;
+      top: 34px;
+      z-index: 1;
+      background: #ff9f80;
+    }
+
+    .context-child {
+      left: 66px;
+      top: 48px;
+      z-index: 50;
+      width: 140px;
+      height: 70px;
+      background: #ffdd57;
+    }
+
+    .context-sibling {
+      left: 118px;
+      top: 72px;
+      z-index: 2;
+      background: #7fc8f8;
+    }
   </style>
 </head>
 <body>
@@ -136,10 +159,22 @@
 
   <div class="section">
     <h2>auto z-index order</h2>
-    <p>The orange box is earlier in the DOM and should appear on top when z-index is omitted.</p>
+    <p>The blue box is later in the DOM and should appear on top when z-index is omitted.</p>
     <div class="stage">
       <div class="box auto-front">auto first</div>
       <div class="box auto-back">auto second</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>stacking context boundary</h2>
+    <p>The blue sibling has z-index 2 and should cover the yellow child, even though the child has z-index 50 inside a z-index 1 parent.</p>
+    <div class="stage">
+      <div class="box context-parent">
+        parent z-index: 1
+        <div class="box context-child">child z-index: 50</div>
+      </div>
+      <div class="box context-sibling">sibling z-index: 2</div>
     </div>
   </div>
 </body>
