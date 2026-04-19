@@ -66,6 +66,21 @@ impl Position {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZIndex {
+    Auto,
+    Integer(i32),
+}
+
+impl ZIndex {
+    pub fn stack_level(self) -> Option<i32> {
+        match self {
+            ZIndex::Auto => None,
+            ZIndex::Integer(value) => Some(value),
+        }
+    }
+}
+
 impl StyledNode {
     pub fn value(&self, name: &str) -> Option<&String> {
         self.specified_values.get(name)
@@ -138,6 +153,18 @@ impl StyledNode {
             Some("right") => Clear::Right,
             Some("both") => Clear::Both,
             _ => Clear::None,
+        }
+    }
+
+    /// CSS z-index の最小実装。
+    /// positioned 要素に効かせる判定は display list 側で行う。
+    pub fn z_index(&self) -> ZIndex {
+        match self.value("z-index").map(|s| s.trim()) {
+            Some("auto") | None => ZIndex::Auto,
+            Some(value) => value
+                .parse::<i32>()
+                .map(ZIndex::Integer)
+                .unwrap_or(ZIndex::Auto),
         }
     }
 

@@ -1,0 +1,146 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>z-index layout test</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #f7f7f8;
+      color: #111111;
+      font-size: 16px;
+      line-height: 1.35;
+    }
+
+    body {
+      padding: 20px;
+    }
+
+    h1 {
+      margin: 0 0 16px 0;
+      font-size: 28px;
+    }
+
+    h2 {
+      margin: 0 0 10px 0;
+      font-size: 20px;
+    }
+
+    p {
+      margin: 8px 0;
+    }
+
+    .section {
+      margin: 0 0 22px 0;
+      padding: 14px;
+      background: #ffffff;
+      border: 2px solid #dddddd;
+      border-radius: 6px;
+    }
+
+    .stage {
+      position: relative;
+      width: 420px;
+      height: 230px;
+      margin: 12px 0 0 0;
+      background: #e8e8e8;
+      border: 2px solid #222222;
+    }
+
+    .box {
+      position: absolute;
+      width: 190px;
+      height: 120px;
+      padding: 12px;
+      color: #111111;
+      border: 3px solid #111111;
+    }
+
+    .back {
+      left: 44px;
+      top: 34px;
+      z-index: 1;
+      background: #7fc8f8;
+    }
+
+    .middle {
+      left: 118px;
+      top: 72px;
+      z-index: 5;
+      background: #ffdd57;
+    }
+
+    .front {
+      left: 196px;
+      top: 110px;
+      z-index: 10;
+      background: #ff9f80;
+    }
+
+    .negative {
+      left: 18px;
+      top: 120px;
+      z-index: -1;
+      background: #b7e4c7;
+    }
+
+    .auto-front {
+      left: 44px;
+      top: 34px;
+      background: #ff9f80;
+    }
+
+    .auto-back {
+      left: 118px;
+      top: 72px;
+      background: #7fc8f8;
+    }
+
+    .fixed-note {
+      position: fixed;
+      right: 20px;
+      top: 20px;
+      z-index: 20;
+      width: 180px;
+      padding: 10px;
+      background: #d4c2fc;
+      border: 2px solid #5a3ea1;
+    }
+  </style>
+</head>
+<body>
+  <div class="fixed-note">fixed note: z-index 20</div>
+
+  <h1>CSS z-index layout test</h1>
+  <p>Overlapping positioned boxes should be painted by z-index, not just DOM order.</p>
+
+  <div class="section">
+    <h2>positioned siblings</h2>
+    <p>The orange box has the highest z-index and should appear on top.</p>
+    <div class="stage">
+      <div class="box front">z-index: 10</div>
+      <div class="box back">z-index: 1</div>
+      <div class="box middle">z-index: 5</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>negative z-index</h2>
+    <p>The green box uses a negative z-index and should be painted behind the yellow box.</p>
+    <div class="stage">
+      <div class="box middle">z-index: 5</div>
+      <div class="box negative">z-index: -1</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>auto z-index order</h2>
+    <p>The orange box is earlier in the DOM and should appear on top when z-index is omitted.</p>
+    <div class="stage">
+      <div class="box auto-front">auto first</div>
+      <div class="box auto-back">auto second</div>
+    </div>
+  </div>
+</body>
+</html>

@@ -238,6 +238,21 @@ struct CachedImage {
     _tex: Texture,      // texture も保持
 }
 
+enum PreparedDrawCommand {
+    Rect { start: u32, count: u32 },
+    Text { start: u32, count: u32 },
+    Image { start: u32, count: u32, key: String },
+}
+
+fn display_item_fixed(item: &DisplayItem) -> bool {
+    match item {
+        DisplayItem::Rect(r) => r.fixed,
+        DisplayItem::Border(b) => b.fixed,
+        DisplayItem::Text(t) => t.fixed,
+        DisplayItem::Image(im) => im.fixed,
+    }
+}
+
 pub struct GPU<'a> {
     pub surface: Surface<'a>,
     pub device: Device,
@@ -589,61 +604,79 @@ impl<'a> GPU<'a> {
     }
 
     pub fn render_items(&mut self, items: &[DisplayItem], scroll_y: f32) {
-        // 分解
-        let mut rects: Vec<DrawRect> = Vec::new();
-        let mut borders: Vec<DrawBorder> = Vec::new();
-        let mut texts: Vec<DrawText> = Vec::new();
-        let mut images: Vec<DrawImage> = Vec::new();
-        let mut fixed_rects: Vec<DrawRect> = Vec::new();
-        let mut fixed_borders: Vec<DrawBorder> = Vec::new();
-        let mut fixed_texts: Vec<DrawText> = Vec::new();
-        let mut fixed_images: Vec<DrawImage> = Vec::new();
-
-        for it in items {
-            match it {
-                DisplayItem::Rect(r) if r.fixed => fixed_rects.push(r.clone()),
-                DisplayItem::Rect(r) => rects.push(r.clone()),
-                DisplayItem::Border(b) if b.fixed => fixed_borders.push(b.clone()),
-                DisplayItem::Border(b) => borders.push(b.clone()),
-                DisplayItem::Text(t) if t.fixed => fixed_texts.push(t.clone()),
-                DisplayItem::Text(t) => texts.push(t.clone()),
-                DisplayItem::Image(im) if im.fixed => fixed_images.push(im.clone()),
-                DisplayItem::Image(im) => images.push(im.clone()),
+        // 先に image のキャッシュを作る（bind_group が必要）。
+        for item in items {
+            if let DisplayItem::Image(im) = item {
+                let _ = self.get_or_upload_image(&im.key, &im.src);
             }
         }
 
-        // 先に image のキャッシュを作る（bind_group が必要）
-        let mut drawable_images: Vec<DrawImage> = Vec::new();
-        for im in &images {
-            let _ = self.get_or_upload_image(&im.key, &im.src);
-            if self.image_cache.contains_key(&im.key) {
-                drawable_images.push(im.clone());
+        let mut rect_verts = Vec::<RectVertex>::new();
+        let mut image_verts = Vec::<ImageVertex>::new();
+        let mut text_verts = Vec::<TextVertex>::new();
+        let mut normal_commands = Vec::<PreparedDrawCommand>::new();
+        let mut fixed_commands = Vec::<PreparedDrawCommand>::new();
+
+        for item in items {
+            let commands = if display_item_fixed(item) {
+                &mut fixed_commands
+            } else {
+                &mut normal_commands
+            };
+
+            match item {
+                DisplayItem::Rect(r) => {
+                    let start = rect_verts.len();
+                    rect_verts.extend(self.rect_vertices(std::slice::from_ref(r), scroll_y));
+                    let count = rect_verts.len() - start;
+                    if count > 0 {
+                        commands.push(PreparedDrawCommand::Rect {
+                            start: start as u32,
+                            count: count as u32,
+                        });
+                    }
+                }
+                DisplayItem::Border(b) => {
+                    let start = rect_verts.len();
+                    rect_verts.extend(self.border_vertices(std::slice::from_ref(b), scroll_y));
+                    let count = rect_verts.len() - start;
+                    if count > 0 {
+                        commands.push(PreparedDrawCommand::Rect {
+                            start: start as u32,
+                            count: count as u32,
+                        });
+                    }
+                }
+                DisplayItem::Text(t) => {
+                    let start = text_verts.len();
+                    let verts = self.text_vertices(std::slice::from_ref(t), scroll_y);
+                    text_verts.extend(verts);
+                    let count = text_verts.len() - start;
+                    if count > 0 {
+                        commands.push(PreparedDrawCommand::Text {
+                            start: start as u32,
+                            count: count as u32,
+                        });
+                    }
+                }
+                DisplayItem::Image(im) => {
+                    if !self.image_cache.contains_key(&im.key) {
+                        continue;
+                    }
+
+                    let start = image_verts.len();
+                    image_verts.extend(self.image_vertices(std::slice::from_ref(im), scroll_y));
+                    let count = image_verts.len() - start;
+                    if count > 0 {
+                        commands.push(PreparedDrawCommand::Image {
+                            start: start as u32,
+                            count: count as u32,
+                            key: im.key.clone(),
+                        });
+                    }
+                }
             }
         }
-        let mut fixed_drawable_images: Vec<DrawImage> = Vec::new();
-        for im in &fixed_images {
-            let _ = self.get_or_upload_image(&im.key, &im.src);
-            if self.image_cache.contains_key(&im.key) {
-                fixed_drawable_images.push(im.clone());
-            }
-        }
-
-        let mut normal_rect_verts = self.rect_vertices(&rects, scroll_y);
-        normal_rect_verts.extend(self.border_vertices(&borders, scroll_y));
-        let normal_rect_vert_count = normal_rect_verts.len();
-        let mut rect_verts = normal_rect_verts;
-        rect_verts.extend(self.rect_vertices(&fixed_rects, scroll_y));
-        rect_verts.extend(self.border_vertices(&fixed_borders, scroll_y));
-
-        let normal_image_verts = self.image_vertices(&drawable_images, scroll_y);
-        let normal_image_vert_count = normal_image_verts.len();
-        let mut image_verts = normal_image_verts;
-        image_verts.extend(self.image_vertices(&fixed_drawable_images, scroll_y));
-
-        let normal_text_verts = self.text_vertices(&texts, scroll_y);
-        let normal_text_vert_count = normal_text_verts.len();
-        let mut text_verts = normal_text_verts;
-        text_verts.extend(self.text_vertices(&fixed_texts, scroll_y));
 
         self.ensure_rect_capacity(rect_verts.len());
         self.ensure_image_capacity(image_verts.len());
@@ -695,78 +728,30 @@ impl<'a> GPU<'a> {
                 timestamp_writes: None,
             });
 
-            // normal rect（背景 + border）
-            if normal_rect_vert_count > 0 {
-                pass.set_pipeline(&self.rect_pipeline);
-                pass.set_vertex_buffer(0, self.rect_vbuf.slice(..));
-                pass.draw(0..(normal_rect_vert_count as u32), 0..1);
-            }
-
-            // normal image（中景）: 画像ごとに bind_group 切替
-            if normal_image_vert_count > 0 && !drawable_images.is_empty() {
-                pass.set_pipeline(&self.image_pipeline);
-                pass.set_vertex_buffer(0, self.image_vbuf.slice(..));
-
-                // 画像ごとに6頂点(=1quad)を描く前提
-                for (i, im) in drawable_images.iter().enumerate() {
-                    if let Some(cached) = self.image_cache.get(&im.key) {
-                        pass.set_bind_group(0, &cached.bind_group, &[]);
-                        let start = (i * gpu_constants::VERTICES_PER_QUAD) as u32;
-                        pass.draw(
-                            start..(start + gpu_constants::VERTICES_PER_QUAD as u32),
-                            0..1,
-                        );
-                    } else {
-                        eprintln!("[img] cache miss key={} src={}", im.key, im.src);
+            for command in normal_commands.iter().chain(fixed_commands.iter()) {
+                match command {
+                    PreparedDrawCommand::Rect { start, count } => {
+                        pass.set_pipeline(&self.rect_pipeline);
+                        pass.set_vertex_buffer(0, self.rect_vbuf.slice(..));
+                        pass.draw(*start..(*start + *count), 0..1);
+                    }
+                    PreparedDrawCommand::Text { start, count } => {
+                        pass.set_pipeline(&self.text_pipeline);
+                        pass.set_bind_group(0, &self.atlas_bind_group, &[]);
+                        pass.set_vertex_buffer(0, self.text_vbuf.slice(..));
+                        pass.draw(*start..(*start + *count), 0..1);
+                    }
+                    PreparedDrawCommand::Image { start, count, key } => {
+                        if let Some(cached) = self.image_cache.get(key) {
+                            pass.set_pipeline(&self.image_pipeline);
+                            pass.set_bind_group(0, &cached.bind_group, &[]);
+                            pass.set_vertex_buffer(0, self.image_vbuf.slice(..));
+                            pass.draw(*start..(*start + *count), 0..1);
+                        } else {
+                            eprintln!("[img] cache miss key={}", key);
+                        }
                     }
                 }
-            }
-
-            // normal text（前景）
-            if normal_text_vert_count > 0 {
-                pass.set_pipeline(&self.text_pipeline);
-                pass.set_bind_group(0, &self.atlas_bind_group, &[]);
-                pass.set_vertex_buffer(0, self.text_vbuf.slice(..));
-                pass.draw(0..(normal_text_vert_count as u32), 0..1);
-            }
-
-            // fixed content is an overlay: paint it after normal content.
-            if rect_verts.len() > normal_rect_vert_count {
-                pass.set_pipeline(&self.rect_pipeline);
-                pass.set_vertex_buffer(0, self.rect_vbuf.slice(..));
-                pass.draw(
-                    (normal_rect_vert_count as u32)..(rect_verts.len() as u32),
-                    0..1,
-                );
-            }
-
-            if image_verts.len() > normal_image_vert_count && !fixed_drawable_images.is_empty() {
-                pass.set_pipeline(&self.image_pipeline);
-                pass.set_vertex_buffer(0, self.image_vbuf.slice(..));
-
-                for (i, im) in fixed_drawable_images.iter().enumerate() {
-                    if let Some(cached) = self.image_cache.get(&im.key) {
-                        pass.set_bind_group(0, &cached.bind_group, &[]);
-                        let start =
-                            normal_image_vert_count + (i * gpu_constants::VERTICES_PER_QUAD);
-                        pass.draw(
-                            (start as u32)..((start + gpu_constants::VERTICES_PER_QUAD) as u32),
-                            0..1,
-                        );
-                    } else {
-                        eprintln!("[img] cache miss key={} src={}", im.key, im.src);
-                    }
-                }
-            }
-
-            if text_verts.len() > normal_text_vert_count {
-                pass.set_pipeline(&self.text_pipeline);
-                pass.set_bind_group(0, &self.atlas_bind_group, &[]);
-                pass.set_vertex_buffer(0, self.text_vbuf.slice(..));
-                pass.draw(
-                    (normal_text_vert_count as u32)..(text_verts.len() as u32),
-                    0..1,
-                );
             }
         }
 

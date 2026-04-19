@@ -399,7 +399,10 @@ fn walk(
         }
     }
 
-    for child in &node.children {
+    let mut children: Vec<(usize, &LayoutBox<'_>)> = node.children.iter().enumerate().collect();
+    children.sort_by(|(a_index, a), (b_index, b)| child_paint_order(*a_index, a, *b_index, b));
+
+    for (_, child) in children {
         walk(child, out, font, base_url, fixed);
     }
 }
@@ -523,9 +526,87 @@ fn nearly_equal(a: f32, b: f32) -> bool {
     (a - b).abs() <= 0.5
 }
 
+fn child_paint_order(
+    a_index: usize,
+    a: &LayoutBox<'_>,
+    b_index: usize,
+    b: &LayoutBox<'_>,
+) -> Ordering {
+    let a_stack = paint_stack_level(a);
+    let b_stack = paint_stack_level(b);
+
+    a_stack.level.cmp(&b_stack.level).then_with(|| {
+        if !a_stack.explicit && !b_stack.explicit {
+            b_index.cmp(&a_index)
+        } else {
+            a_index.cmp(&b_index)
+        }
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PaintStackLevel {
+    level: i32,
+    explicit: bool,
+}
+
+fn paint_stack_level(node: &LayoutBox<'_>) -> PaintStackLevel {
+    let explicit_level = node
+        .get_style_node()
+        .filter(|sn| sn.position().is_positioned())
+        .and_then(|sn| sn.z_index().stack_level());
+
+    PaintStackLevel {
+        level: explicit_level.unwrap_or(0),
+        explicit: explicit_level.is_some(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct EmptyImageCache;
+
+    impl crate::layout::ImageSizeProvider for EmptyImageCache {
+        fn normalize_src_key(&self, _src: &str) -> Option<String> {
+            None
+        }
+
+        fn natural_size_px(&self, _key: &str) -> Option<(u32, u32)> {
+            None
+        }
+    }
+
+    fn test_font() -> Font {
+        fontdue::Font::from_bytes(
+            include_bytes!("../assets/DejaVuSans.ttf") as &[u8],
+            fontdue::FontSettings::default(),
+        )
+        .unwrap()
+    }
+
+    fn display_list_for(input: &str, css: &str) -> Vec<DisplayItem> {
+        let dom = crate::html::parse(input.to_string());
+        let stylesheet = crate::css::Parser::new(css.to_string()).parse_stylesheet();
+        let styled = crate::style::style_tree(dom, &stylesheet);
+        let mut layout = crate::layout::build_layout_tree(&styled);
+        let mut viewport = crate::layout::Dimensions::default();
+        viewport.content.width = 400.0;
+        viewport.content.height = 300.0;
+        let font = test_font();
+
+        layout.layout_with_font(viewport, &font, &EmptyImageCache);
+
+        let mut items = Vec::new();
+        build_display_list(
+            &layout,
+            &mut items,
+            &font,
+            &crate::url::URL::new("http://example.com/"),
+        );
+        items
+    }
 
     fn underline(x: f32, y: f32, w: f32, link_id: usize) -> DisplayItem {
         let color = color::DEFAULT_LINK;
@@ -573,6 +654,110 @@ mod tests {
         merge_adjacent_link_underlines(&mut items);
 
         assert_eq!(items.len(), 3);
+    }
+
+    #[test]
+    fn positioned_z_index_reorders_painting_for_overlapping_siblings() {
+        let items = display_list_for(
+            r#"
+            <div id="container">
+                <div id="front"></div>
+                <div id="back"></div>
+            </div>
+            "#,
+            r#"
+            #container {
+                display: block;
+                position: relative;
+                width: 200px;
+                height: 100px;
+                margin: 0;
+                padding: 0;
+            }
+            #front {
+                display: block;
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100px;
+                height: 100px;
+                background: red;
+                z-index: 10;
+            }
+            #back {
+                display: block;
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100px;
+                height: 100px;
+                background: blue;
+                z-index: 1;
+            }
+            "#,
+        );
+
+        let red_index = items
+            .iter()
+            .position(|item| matches!(item, DisplayItem::Rect(rect) if rect.color == color::RED))
+            .expect("red rect should be painted");
+        let blue_index = items
+            .iter()
+            .position(|item| matches!(item, DisplayItem::Rect(rect) if rect.color == color::BLUE))
+            .expect("blue rect should be painted");
+
+        assert!(blue_index < red_index);
+    }
+
+    #[test]
+    fn auto_z_index_uses_reversed_implicit_sibling_order() {
+        let items = display_list_for(
+            r#"
+            <div id="container">
+                <div id="front"></div>
+                <div id="back"></div>
+            </div>
+            "#,
+            r#"
+            #container {
+                display: block;
+                position: relative;
+                width: 200px;
+                height: 100px;
+                margin: 0;
+                padding: 0;
+            }
+            #front {
+                display: block;
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100px;
+                height: 100px;
+                background: red;
+            }
+            #back {
+                display: block;
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100px;
+                height: 100px;
+                background: blue;
+            }
+            "#,
+        );
+
+        let red_index = items
+            .iter()
+            .position(|item| matches!(item, DisplayItem::Rect(rect) if rect.color == color::RED))
+            .expect("red rect should be painted");
+        let blue_index = items
+            .iter()
+            .position(|item| matches!(item, DisplayItem::Rect(rect) if rect.color == color::BLUE))
+            .expect("blue rect should be painted");
+
+        assert!(blue_index < red_index);
     }
 }
 
