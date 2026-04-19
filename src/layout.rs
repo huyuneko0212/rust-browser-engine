@@ -1,5 +1,5 @@
 use crate::constants::layout as layout_constants;
-use crate::style::{Display, StyledNode};
+use crate::style::{Display, Position, StyledNode};
 use fontdue::Font;
 
 pub trait ImageSizeProvider {
@@ -102,6 +102,15 @@ impl Dimensions {
             + self.border.bottom
             + self.margin.bottom
     }
+
+    fn padding_box_as_containing_block(&self) -> Dimensions {
+        let mut containing = Dimensions::default();
+        containing.content.x = self.content.x - self.padding.left;
+        containing.content.y = self.content.y - self.padding.top;
+        containing.content.width = self.content.width + self.padding.left + self.padding.right;
+        containing.content.height = self.content.height + self.padding.top + self.padding.bottom;
+        containing
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -115,6 +124,14 @@ pub enum BoxType<'a> {
 pub struct TextFragment {
     pub rect: Rect,
     pub text: String,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct Insets {
+    top: Option<f32>,
+    right: Option<f32>,
+    bottom: Option<f32>,
+    left: Option<f32>,
 }
 
 #[derive(Debug)]
@@ -142,43 +159,116 @@ impl<'a> LayoutBox<'a> {
         }
     }
 
+    fn node_position(&self) -> Position {
+        self.get_style_node()
+            .map(|node| node.position())
+            .unwrap_or(Position::Static)
+    }
+
     pub fn layout_with_font(
         &mut self,
         containing_block: Dimensions,
         font: &Font,
         img_cache: &dyn ImageSizeProvider,
     ) {
-        self.text_fragments.clear();
-
-        match self.box_type {
-            BoxType::BlockNode(_) => self.layout_block_with_font(containing_block, font, img_cache),
-            BoxType::InlineNode(_) => {
-                self.layout_inline_leaf_fallback(containing_block, font, img_cache)
-            }
-            BoxType::Anonymous => {
-                self.layout_anonymous_block_with_font(containing_block, font, img_cache)
-            }
-        }
+        let viewport = containing_block.clone();
+        self.layout_with_context(
+            containing_block.clone(),
+            containing_block,
+            viewport,
+            font,
+            img_cache,
+        );
     }
 
-    fn layout_block_with_font(
+    fn layout_with_context(
         &mut self,
         containing_block: Dimensions,
+        positioned_containing_block: Dimensions,
+        viewport: Dimensions,
         font: &Font,
         img_cache: &dyn ImageSizeProvider,
     ) {
-        self.calculate_block_model(containing_block.clone());
-        self.calculate_block_width(containing_block.clone());
-        self.calculate_block_position(containing_block.clone());
+        self.text_fragments.clear();
 
-        self.layout_block_children_with_font(font, img_cache);
-
-        self.calculate_block_height_with_font(font, img_cache);
+        match self.box_type {
+            BoxType::BlockNode(_) => self.layout_block_with_context(
+                containing_block,
+                positioned_containing_block,
+                viewport,
+                font,
+                img_cache,
+            ),
+            BoxType::InlineNode(_) => {
+                self.layout_inline_leaf_fallback(containing_block.clone(), font, img_cache);
+                self.apply_relative_position_if_needed(&containing_block);
+            }
+            BoxType::Anonymous => self.layout_anonymous_block_with_context(
+                containing_block,
+                positioned_containing_block,
+                viewport,
+                font,
+                img_cache,
+            ),
+        }
     }
 
-    fn layout_anonymous_block_with_font(
+    fn layout_block_with_context(
         &mut self,
         containing_block: Dimensions,
+        positioned_containing_block: Dimensions,
+        viewport: Dimensions,
+        font: &Font,
+        img_cache: &dyn ImageSizeProvider,
+    ) {
+        let position = self.node_position();
+        let out_of_flow = position.is_out_of_flow();
+        let positioning_block = if position == Position::Fixed {
+            viewport.clone()
+        } else {
+            positioned_containing_block.clone()
+        };
+        let model_block = if out_of_flow {
+            positioning_block.clone()
+        } else {
+            containing_block.clone()
+        };
+
+        self.calculate_block_model(model_block.clone());
+        if out_of_flow {
+            self.calculate_positioned_block_width(positioning_block.clone());
+        } else {
+            self.calculate_block_width(containing_block.clone());
+        }
+        self.calculate_block_position(containing_block.clone());
+
+        let child_positioned_containing_block = if position.is_positioned() {
+            self.positioned_descendant_containing_block()
+        } else {
+            positioned_containing_block
+        };
+
+        self.layout_block_children_with_context(
+            child_positioned_containing_block,
+            viewport,
+            font,
+            img_cache,
+        );
+
+        self.calculate_block_height_with_font(font, img_cache);
+
+        if out_of_flow {
+            self.apply_out_of_flow_position(&positioning_block);
+        } else {
+            self.apply_relative_position_if_needed(&containing_block);
+        }
+    }
+
+    fn layout_anonymous_block_with_context(
+        &mut self,
+        containing_block: Dimensions,
+        positioned_containing_block: Dimensions,
+        viewport: Dimensions,
         font: &Font,
         img_cache: &dyn ImageSizeProvider,
     ) {
@@ -187,7 +277,12 @@ impl<'a> LayoutBox<'a> {
         self.dimensions.content.width = containing_block.content.width;
         self.dimensions.content.height = 0.0;
 
-        self.layout_inline_formatting_context(font, img_cache);
+        self.layout_inline_formatting_context(
+            positioned_containing_block,
+            viewport,
+            font,
+            img_cache,
+        );
     }
 
     fn layout_inline_leaf_fallback(
@@ -590,6 +685,52 @@ impl<'a> LayoutBox<'a> {
         }
     }
 
+    fn calculate_positioned_block_width(&mut self, positioning_block: Dimensions) {
+        let viewport_w = positioning_block.content.width;
+        let viewport_h = positioning_block
+            .content
+            .height
+            .max(layout_constants::MIN_LAYOUT_SIZE_PX);
+        let parent_w = positioning_block.content.width;
+
+        let width_str = self
+            .get_style_node()
+            .and_then(|s| s.value("width"))
+            .cloned();
+        let insets = self.specified_insets(parent_w, viewport_h, viewport_w, viewport_h);
+        let d = &mut self.dimensions;
+
+        if let Some(ws) = width_str.as_deref() {
+            if let Some(w) = parse_length(ws, parent_w, viewport_w, viewport_h) {
+                d.content.width = w.max(0.0);
+                return;
+            }
+        }
+
+        if let (Some(left), Some(right)) = (insets.left, insets.right) {
+            let available = positioning_block.content.width
+                - left
+                - right
+                - d.margin.left
+                - d.margin.right
+                - d.padding.left
+                - d.padding.right
+                - d.border.left
+                - d.border.right;
+            d.content.width = available.max(0.0);
+            return;
+        }
+
+        let available = positioning_block.content.width
+            - d.margin.left
+            - d.margin.right
+            - d.padding.left
+            - d.padding.right
+            - d.border.left
+            - d.border.right;
+        d.content.width = available.max(0.0);
+    }
+
     fn calculate_block_position(&mut self, containing_block: Dimensions) {
         let d = &mut self.dimensions;
 
@@ -597,7 +738,13 @@ impl<'a> LayoutBox<'a> {
         d.content.y = containing_block.content.y + d.margin.top + d.border.top + d.padding.top;
     }
 
-    fn layout_block_children_with_font(&mut self, font: &Font, img_cache: &dyn ImageSizeProvider) {
+    fn layout_block_children_with_context(
+        &mut self,
+        positioned_containing_block: Dimensions,
+        viewport: Dimensions,
+        font: &Font,
+        img_cache: &dyn ImageSizeProvider,
+    ) {
         let mut y = self.dimensions.content.y;
 
         for child in &mut self.children {
@@ -611,9 +758,19 @@ impl<'a> LayoutBox<'a> {
                 .height
                 .max(layout_constants::MIN_LAYOUT_SIZE_PX);
 
-            child.layout_with_font(cb, font, img_cache);
+            let child_out_of_flow = child.node_position().is_out_of_flow();
 
-            y += child.dimensions.margin_box_height().max(0.0);
+            child.layout_with_context(
+                cb,
+                positioned_containing_block.clone(),
+                viewport.clone(),
+                font,
+                img_cache,
+            );
+
+            if !child_out_of_flow {
+                y += child.dimensions.margin_box_height().max(0.0);
+            }
         }
 
         self.dimensions.content.height = (y - self.dimensions.content.y).max(0.0);
@@ -678,7 +835,13 @@ impl<'a> LayoutBox<'a> {
     }
 
     /// ★IFC: anonymous block の中の inline subtree を “行に詰める”
-    fn layout_inline_formatting_context(&mut self, font: &Font, img_cache: &dyn ImageSizeProvider) {
+    fn layout_inline_formatting_context(
+        &mut self,
+        positioned_containing_block: Dimensions,
+        viewport: Dimensions,
+        font: &Font,
+        img_cache: &dyn ImageSizeProvider,
+    ) {
         let start_x = self.dimensions.content.x;
         let start_y = self.dimensions.content.y;
         let max_w = self
@@ -692,6 +855,14 @@ impl<'a> LayoutBox<'a> {
         let mut current_line_h = 0.0f32;
         let mut pending_space_w = 0.0f32;
         let mut pending_space_h = 0.0f32;
+        let mut inline_containing_block = Dimensions::default();
+        inline_containing_block.content.x = start_x;
+        inline_containing_block.content.y = start_y;
+        inline_containing_block.content.width = max_w;
+        inline_containing_block.content.height = viewport
+            .content
+            .height
+            .max(layout_constants::MIN_LAYOUT_SIZE_PX);
 
         fn walk_inline<'a>(
             node: &mut LayoutBox<'a>,
@@ -699,6 +870,9 @@ impl<'a> LayoutBox<'a> {
             img_cache: &dyn ImageSizeProvider,
             start_x: f32,
             max_w: f32,
+            containing_block: &Dimensions,
+            positioned_containing_block: &Dimensions,
+            viewport: &Dimensions,
             cursor_x: &mut f32,
             cursor_y: &mut f32,
             current_line_h: &mut f32,
@@ -796,6 +970,9 @@ impl<'a> LayoutBox<'a> {
                                 img_cache,
                                 start_x,
                                 max_w,
+                                containing_block,
+                                positioned_containing_block,
+                                viewport,
                                 cursor_x,
                                 cursor_y,
                                 current_line_h,
@@ -808,19 +985,25 @@ impl<'a> LayoutBox<'a> {
                         node.dimensions.content.x = *cursor_x;
                         node.dimensions.content.y = *cursor_y;
                     }
+
+                    node.apply_relative_position_if_needed(containing_block);
                 }
                 BoxType::BlockNode(_) | BoxType::Anonymous => {
-                    *pending_space_w = 0.0;
-                    *pending_space_h = 0.0;
+                    let out_of_flow = node.node_position().is_out_of_flow();
 
-                    if *cursor_x > start_x {
-                        advance_to_next_line(
-                            cursor_x,
-                            cursor_y,
-                            current_line_h,
-                            start_x,
-                            layout_constants::MIN_LINE_HEIGHT_PX,
-                        );
+                    if !out_of_flow {
+                        *pending_space_w = 0.0;
+                        *pending_space_h = 0.0;
+
+                        if *cursor_x > start_x {
+                            advance_to_next_line(
+                                cursor_x,
+                                cursor_y,
+                                current_line_h,
+                                start_x,
+                                layout_constants::MIN_LINE_HEIGHT_PX,
+                            );
+                        }
                     }
                     let mut cb = Dimensions::default();
                     cb.content.x = start_x;
@@ -828,8 +1011,16 @@ impl<'a> LayoutBox<'a> {
                     cb.content.width = max_w;
                     cb.content.height = layout_constants::MIN_LAYOUT_SIZE_PX;
 
-                    node.layout_with_font(cb, font, img_cache);
-                    *cursor_y += node.dimensions.margin_box_height().max(0.0);
+                    node.layout_with_context(
+                        cb,
+                        positioned_containing_block.clone(),
+                        viewport.clone(),
+                        font,
+                        img_cache,
+                    );
+                    if !out_of_flow {
+                        *cursor_y += node.dimensions.margin_box_height().max(0.0);
+                    }
                 }
             }
         }
@@ -841,6 +1032,9 @@ impl<'a> LayoutBox<'a> {
                 img_cache,
                 start_x,
                 max_w,
+                &inline_containing_block,
+                &positioned_containing_block,
+                &viewport,
                 &mut cursor_x,
                 &mut cursor_y,
                 &mut current_line_h,
@@ -852,6 +1046,144 @@ impl<'a> LayoutBox<'a> {
         let total_h = (cursor_y - start_y) + current_line_h.max(0.0);
         self.dimensions.content.height = total_h.max(0.0);
     }
+
+    fn apply_relative_position_if_needed(&mut self, containing_block: &Dimensions) {
+        if !self.node_position().behaves_like_relative() {
+            return;
+        }
+
+        let (dx, dy) = self.relative_position_offset(containing_block);
+        self.shift_tree(dx, dy);
+    }
+
+    fn apply_out_of_flow_position(&mut self, positioning_block: &Dimensions) {
+        let insets = self.specified_insets(
+            positioning_block.content.width,
+            positioning_block.content.height,
+            positioning_block.content.width,
+            positioning_block.content.height,
+        );
+
+        let mut target_x = self.dimensions.content.x;
+        let mut target_y = self.dimensions.content.y;
+        let d = &self.dimensions;
+
+        if let Some(left) = insets.left {
+            target_x =
+                positioning_block.content.x + left + d.margin.left + d.border.left + d.padding.left;
+        } else if let Some(right) = insets.right {
+            target_x = positioning_block.content.x + positioning_block.content.width
+                - right
+                - d.margin.right
+                - d.border.right
+                - d.padding.right
+                - d.content.width;
+        }
+
+        if let Some(top) = insets.top {
+            target_y =
+                positioning_block.content.y + top + d.margin.top + d.border.top + d.padding.top;
+        } else if let Some(bottom) = insets.bottom {
+            target_y = positioning_block.content.y + positioning_block.content.height
+                - bottom
+                - d.margin.bottom
+                - d.border.bottom
+                - d.padding.bottom
+                - d.content.height;
+        }
+
+        self.shift_tree(
+            target_x - self.dimensions.content.x,
+            target_y - self.dimensions.content.y,
+        );
+    }
+
+    fn relative_position_offset(&self, containing_block: &Dimensions) -> (f32, f32) {
+        let insets = self.specified_insets(
+            containing_block.content.width,
+            containing_block.content.height,
+            containing_block.content.width,
+            containing_block.content.height,
+        );
+
+        let dx = insets
+            .left
+            .or_else(|| insets.right.map(|v| -v))
+            .unwrap_or(0.0);
+        let dy = insets
+            .top
+            .or_else(|| insets.bottom.map(|v| -v))
+            .unwrap_or(0.0);
+
+        (dx, dy)
+    }
+
+    fn specified_insets(
+        &self,
+        horizontal_basis: f32,
+        vertical_basis: f32,
+        viewport_w: f32,
+        viewport_h: f32,
+    ) -> Insets {
+        let Some(sn) = self.get_style_node() else {
+            return Insets::default();
+        };
+
+        Insets {
+            top: specified_inset(sn, InsetEdge::Top).and_then(|value| {
+                parse_inset_length(&value, vertical_basis, viewport_w, viewport_h)
+            }),
+            right: specified_inset(sn, InsetEdge::Right).and_then(|value| {
+                parse_inset_length(&value, horizontal_basis, viewport_w, viewport_h)
+            }),
+            bottom: specified_inset(sn, InsetEdge::Bottom).and_then(|value| {
+                parse_inset_length(&value, vertical_basis, viewport_w, viewport_h)
+            }),
+            left: specified_inset(sn, InsetEdge::Left).and_then(|value| {
+                parse_inset_length(&value, horizontal_basis, viewport_w, viewport_h)
+            }),
+        }
+    }
+
+    fn shift_tree(&mut self, dx: f32, dy: f32) {
+        if dx.abs() <= f32::EPSILON && dy.abs() <= f32::EPSILON {
+            return;
+        }
+
+        self.dimensions.content.x += dx;
+        self.dimensions.content.y += dy;
+
+        for frag in &mut self.text_fragments {
+            frag.rect.x += dx;
+            frag.rect.y += dy;
+        }
+
+        for child in &mut self.children {
+            child.shift_tree(dx, dy);
+        }
+    }
+
+    fn positioned_descendant_containing_block(&self) -> Dimensions {
+        let mut containing = self.dimensions.padding_box_as_containing_block();
+
+        let viewport_w = self
+            .dimensions
+            .content
+            .width
+            .max(layout_constants::MIN_LAYOUT_SIZE_PX);
+        let viewport_h = layout_constants::DEFAULT_VIEWPORT_HEIGHT_PX;
+
+        if let Some(height) = self
+            .get_style_node()
+            .and_then(|s| s.value("height"))
+            .and_then(|value| parse_length(value, viewport_w, viewport_w, viewport_h))
+        {
+            containing.content.height =
+                height.max(0.0) + self.dimensions.padding.top + self.dimensions.padding.bottom;
+        }
+
+        containing
+    }
 }
 
 pub fn build_layout_tree(style_node: &StyledNode) -> LayoutBox<'_> {
@@ -860,8 +1192,9 @@ pub fn build_layout_tree(style_node: &StyledNode) -> LayoutBox<'_> {
     // - inline の連続: Anonymous block box にまとめて、その中に inline を入れる
     // - inline の子: Chrome と同じように同じ IFC の中へ直列に流す
     let display = style_node.display();
+    let layout_display = layout_display_for(style_node);
 
-    let mut root = LayoutBox::new(match display {
+    let mut root = LayoutBox::new(match layout_display {
         Display::Block => BoxType::BlockNode(style_node),
         Display::Inline => BoxType::InlineNode(style_node),
         Display::None => BoxType::Anonymous,
@@ -872,7 +1205,7 @@ pub fn build_layout_tree(style_node: &StyledNode) -> LayoutBox<'_> {
         return root;
     }
 
-    if display == Display::Inline {
+    if layout_display == Display::Inline {
         for child in &style_node.children {
             if child.display() != Display::None {
                 root.children.push(build_layout_tree(child));
@@ -885,7 +1218,7 @@ pub fn build_layout_tree(style_node: &StyledNode) -> LayoutBox<'_> {
     let mut anon: Option<LayoutBox<'_>> = None;
 
     for child in &style_node.children {
-        match child.display() {
+        match layout_display_for(child) {
             Display::None => {}
             Display::Block => {
                 // 先に溜まってる inline を flush
@@ -915,9 +1248,65 @@ pub fn build_layout_tree(style_node: &StyledNode) -> LayoutBox<'_> {
 
 // ---------------- helpers ----------------
 
+fn layout_display_for(style_node: &StyledNode) -> Display {
+    let display = style_node.display();
+    if display != Display::None && style_node.position().is_out_of_flow() {
+        Display::Block
+    } else {
+        display
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum InsetEdge {
+    Top,
+    Right,
+    Bottom,
+    Left,
+}
+
+fn specified_inset(sn: &StyledNode, edge: InsetEdge) -> Option<String> {
+    let longhand = match edge {
+        InsetEdge::Top => "top",
+        InsetEdge::Right => "right",
+        InsetEdge::Bottom => "bottom",
+        InsetEdge::Left => "left",
+    };
+
+    if let Some(value) = sn.value(longhand) {
+        return Some(value.clone());
+    }
+
+    let shorthand = sn.value("inset")?;
+    let values = parse_4len(shorthand);
+    match edge {
+        InsetEdge::Top => values.0,
+        InsetEdge::Right => values.1,
+        InsetEdge::Bottom => values.2,
+        InsetEdge::Left => values.3,
+    }
+}
+
+fn parse_inset_length(
+    value: &str,
+    containing: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> Option<f32> {
+    let t = value.trim();
+    if t.eq_ignore_ascii_case("auto") {
+        return None;
+    }
+
+    parse_length(t, containing, viewport_w, viewport_h)
+}
+
 fn parse_length(s: &str, containing: f32, viewport_w: f32, viewport_h: f32) -> Option<f32> {
     let t = s.trim();
 
+    if t == "0" || t == "+0" || t == "-0" {
+        return Some(0.0);
+    }
     if t.ends_with("px") {
         return t.trim_end_matches("px").trim().parse::<f32>().ok();
     }
@@ -1552,6 +1941,12 @@ mod tests {
         crate::style::style_tree(dom, &crate::css::Stylesheet::default())
     }
 
+    fn styled_tree_with_css(input: &str, css: &str) -> crate::style::StyledNode {
+        let dom = crate::html::parse(input.to_string());
+        let stylesheet = crate::css::Parser::new(css.to_string()).parse_stylesheet();
+        crate::style::style_tree(dom, &stylesheet)
+    }
+
     fn test_font() -> Font {
         fontdue::Font::from_bytes(
             include_bytes!("../assets/DejaVuSans.ttf") as &[u8],
@@ -1580,6 +1975,28 @@ mod tests {
         node.children
             .iter()
             .find_map(|child| find_element(child, tag))
+    }
+
+    fn is_element_id(node: &LayoutBox<'_>, id: &str) -> bool {
+        node.get_style_node()
+            .and_then(|sn| match &sn.node.node_type {
+                crate::dom::NodeType::Element(ed) => ed.attributes.get("id").map(|s| s.as_str()),
+                _ => None,
+            })
+            == Some(id)
+    }
+
+    fn find_element_by_id<'tree, 'style>(
+        node: &'tree LayoutBox<'style>,
+        id: &str,
+    ) -> Option<&'tree LayoutBox<'style>> {
+        if is_element_id(node, id) {
+            return Some(node);
+        }
+
+        node.children
+            .iter()
+            .find_map(|child| find_element_by_id(child, id))
     }
 
     fn collect_fragments(node: &LayoutBox<'_>, out: &mut Vec<TextFragment>) {
@@ -1637,5 +2054,91 @@ mod tests {
 
         assert!((learn_y - more_y).abs() <= 0.5);
         assert!((more_y - today_y).abs() <= 0.5);
+    }
+
+    #[test]
+    fn relative_position_offsets_visual_box_without_moving_following_flow() {
+        let styled = styled_tree_with_css(
+            r#"<div id="one"></div><div id="rel"></div><div id="two"></div>"#,
+            r#"
+            #one { display: block; width: 100px; height: 20px; margin: 0; padding: 0; }
+            #rel {
+                display: block;
+                position: relative;
+                left: 15px;
+                top: 10px;
+                width: 100px;
+                height: 20px;
+                margin: 0;
+                padding: 0;
+            }
+            #two { display: block; width: 100px; height: 20px; margin: 0; padding: 0; }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 300.0;
+        viewport.content.height = 200.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let one = find_element_by_id(&layout, "one").unwrap();
+        let rel = find_element_by_id(&layout, "rel").unwrap();
+        let two = find_element_by_id(&layout, "two").unwrap();
+
+        assert!((rel.dimensions.content.x - (one.dimensions.content.x + 15.0)).abs() <= 0.5);
+        assert!((rel.dimensions.content.y - (one.dimensions.content.y + 30.0)).abs() <= 0.5);
+        assert!((two.dimensions.content.y - (one.dimensions.content.y + 40.0)).abs() <= 0.5);
+    }
+
+    #[test]
+    fn absolute_position_uses_nearest_positioned_padding_box_and_leaves_flow() {
+        let styled = styled_tree_with_css(
+            r#"<div id="container"><div id="abs"></div><div id="normal"></div></div>"#,
+            r#"
+            #container {
+                display: block;
+                position: relative;
+                width: 200px;
+                height: 100px;
+                padding: 10px;
+                margin: 0;
+            }
+            #abs {
+                display: block;
+                position: absolute;
+                left: 20px;
+                top: 15px;
+                width: 30px;
+                height: 10px;
+                margin: 0;
+                padding: 0;
+            }
+            #normal {
+                display: block;
+                width: 50px;
+                height: 20px;
+                margin: 0;
+                padding: 0;
+            }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 400.0;
+        viewport.content.height = 300.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let container = find_element_by_id(&layout, "container").unwrap();
+        let abs = find_element_by_id(&layout, "abs").unwrap();
+        let normal = find_element_by_id(&layout, "normal").unwrap();
+
+        let padding_box_x = container.dimensions.content.x - container.dimensions.padding.left;
+        let padding_box_y = container.dimensions.content.y - container.dimensions.padding.top;
+
+        assert!((abs.dimensions.content.x - (padding_box_x + 20.0)).abs() <= 0.5);
+        assert!((abs.dimensions.content.y - (padding_box_y + 15.0)).abs() <= 0.5);
+        assert!((normal.dimensions.content.y - container.dimensions.content.y).abs() <= 0.5);
     }
 }

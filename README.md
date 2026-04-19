@@ -91,6 +91,7 @@ CSS 適用、レイアウト計算、display list 生成、GPU 描画までを�
 - 長い単語の文字単位折り返し
 - `margin`, `padding`, `border-width`, `border-radius`
 - `width`, `height`, `margin: auto` の一部
+- `position: relative` / `absolute` / `fixed` と `top` / `right` / `bottom` / `left` / `inset`
 - 画像の CSS サイズ、HTML 属性サイズ、自然サイズの反映
 - `px`, `%`, `vw`, `vh` の長さ解釈
 
@@ -155,7 +156,8 @@ CSS 適用、レイアウト計算、display list 生成、GPU 描画までを�
 - 疑似クラス/疑似要素
 - `@media` など多くの at-rule
 - flex / grid / table layout
-- `position`, `float`, `z-index`
+- `float`, `z-index`
+- `position: sticky` のスクロール追従
 - inline 要素の border 描画
 - `font-family` に応じた実フォント切り替え
 

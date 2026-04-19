@@ -193,12 +193,14 @@ fn hit_test_link(display_list: &[DisplayItem], x: f32, y: f32, scroll_y: f32) ->
     display_list.iter().rev().find_map(|item| match item {
         DisplayItem::Text(t) => t.href.as_ref().and_then(|href| {
             let r = &t.hit;
-            (x >= r.x && x <= r.x + r.width && doc_y >= r.y && doc_y <= r.y + r.height)
+            let test_y = if t.fixed { y } else { doc_y };
+            (x >= r.x && x <= r.x + r.width && test_y >= r.y && test_y <= r.y + r.height)
                 .then(|| href.clone())
         }),
         DisplayItem::Image(im) => im.href.as_ref().and_then(|href| {
             let r = &im.hit;
-            (x >= r.x && x <= r.x + r.width && doc_y >= r.y && doc_y <= r.y + r.height)
+            let test_y = if im.fixed { y } else { doc_y };
+            (x >= r.x && x <= r.x + r.width && test_y >= r.y && test_y <= r.y + r.height)
                 .then(|| href.clone())
         }),
         _ => None,
@@ -207,10 +209,11 @@ fn hit_test_link(display_list: &[DisplayItem], x: f32, y: f32, scroll_y: f32) ->
 
 fn estimate_doc_height(display_list: &[DisplayItem]) -> f32 {
     display_list.iter().fold(1.0f32, |max_y, it| match it {
-        DisplayItem::Rect(r) => max_y.max(r.y + r.h),
-        DisplayItem::Text(t) => max_y.max(t.hit.y + t.hit.height),
-        DisplayItem::Image(im) => max_y.max(im.y + im.h),
-        DisplayItem::Border(b) => max_y.max(b.y + b.h),
+        DisplayItem::Rect(r) if !r.fixed => max_y.max(r.y + r.h),
+        DisplayItem::Text(t) if !t.fixed => max_y.max(t.hit.y + t.hit.height),
+        DisplayItem::Image(im) if !im.fixed => max_y.max(im.y + im.h),
+        DisplayItem::Border(b) if !b.fixed => max_y.max(b.y + b.h),
+        _ => max_y,
     })
 }
 

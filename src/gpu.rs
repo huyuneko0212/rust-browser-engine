@@ -594,12 +594,20 @@ impl<'a> GPU<'a> {
         let mut borders: Vec<DrawBorder> = Vec::new();
         let mut texts: Vec<DrawText> = Vec::new();
         let mut images: Vec<DrawImage> = Vec::new();
+        let mut fixed_rects: Vec<DrawRect> = Vec::new();
+        let mut fixed_borders: Vec<DrawBorder> = Vec::new();
+        let mut fixed_texts: Vec<DrawText> = Vec::new();
+        let mut fixed_images: Vec<DrawImage> = Vec::new();
 
         for it in items {
             match it {
+                DisplayItem::Rect(r) if r.fixed => fixed_rects.push(r.clone()),
                 DisplayItem::Rect(r) => rects.push(r.clone()),
+                DisplayItem::Border(b) if b.fixed => fixed_borders.push(b.clone()),
                 DisplayItem::Border(b) => borders.push(b.clone()),
+                DisplayItem::Text(t) if t.fixed => fixed_texts.push(t.clone()),
                 DisplayItem::Text(t) => texts.push(t.clone()),
+                DisplayItem::Image(im) if im.fixed => fixed_images.push(im.clone()),
                 DisplayItem::Image(im) => images.push(im.clone()),
             }
         }
@@ -612,11 +620,30 @@ impl<'a> GPU<'a> {
                 drawable_images.push(im.clone());
             }
         }
+        let mut fixed_drawable_images: Vec<DrawImage> = Vec::new();
+        for im in &fixed_images {
+            let _ = self.get_or_upload_image(&im.key, &im.src);
+            if self.image_cache.contains_key(&im.key) {
+                fixed_drawable_images.push(im.clone());
+            }
+        }
 
-        let mut rect_verts = self.rect_vertices(&rects, scroll_y);
-        rect_verts.extend(self.border_vertices(&borders, scroll_y));
-        let image_verts = self.image_vertices(&drawable_images, scroll_y);
-        let text_verts = self.text_vertices(&texts, scroll_y);
+        let mut normal_rect_verts = self.rect_vertices(&rects, scroll_y);
+        normal_rect_verts.extend(self.border_vertices(&borders, scroll_y));
+        let normal_rect_vert_count = normal_rect_verts.len();
+        let mut rect_verts = normal_rect_verts;
+        rect_verts.extend(self.rect_vertices(&fixed_rects, scroll_y));
+        rect_verts.extend(self.border_vertices(&fixed_borders, scroll_y));
+
+        let normal_image_verts = self.image_vertices(&drawable_images, scroll_y);
+        let normal_image_vert_count = normal_image_verts.len();
+        let mut image_verts = normal_image_verts;
+        image_verts.extend(self.image_vertices(&fixed_drawable_images, scroll_y));
+
+        let normal_text_verts = self.text_vertices(&texts, scroll_y);
+        let normal_text_vert_count = normal_text_verts.len();
+        let mut text_verts = normal_text_verts;
+        text_verts.extend(self.text_vertices(&fixed_texts, scroll_y));
 
         self.ensure_rect_capacity(rect_verts.len());
         self.ensure_image_capacity(image_verts.len());
@@ -668,15 +695,15 @@ impl<'a> GPU<'a> {
                 timestamp_writes: None,
             });
 
-            // rect（背景 + border）
-            if !rect_verts.is_empty() {
+            // normal rect（背景 + border）
+            if normal_rect_vert_count > 0 {
                 pass.set_pipeline(&self.rect_pipeline);
                 pass.set_vertex_buffer(0, self.rect_vbuf.slice(..));
-                pass.draw(0..(rect_verts.len() as u32), 0..1);
+                pass.draw(0..(normal_rect_vert_count as u32), 0..1);
             }
 
-            // image（中景）: 画像ごとに bind_group 切替
-            if !image_verts.is_empty() && !drawable_images.is_empty() {
+            // normal image（中景）: 画像ごとに bind_group 切替
+            if normal_image_vert_count > 0 && !drawable_images.is_empty() {
                 pass.set_pipeline(&self.image_pipeline);
                 pass.set_vertex_buffer(0, self.image_vbuf.slice(..));
 
@@ -695,12 +722,51 @@ impl<'a> GPU<'a> {
                 }
             }
 
-            // text（前景）
-            if !text_verts.is_empty() {
+            // normal text（前景）
+            if normal_text_vert_count > 0 {
                 pass.set_pipeline(&self.text_pipeline);
                 pass.set_bind_group(0, &self.atlas_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.text_vbuf.slice(..));
-                pass.draw(0..(text_verts.len() as u32), 0..1);
+                pass.draw(0..(normal_text_vert_count as u32), 0..1);
+            }
+
+            // fixed content is an overlay: paint it after normal content.
+            if rect_verts.len() > normal_rect_vert_count {
+                pass.set_pipeline(&self.rect_pipeline);
+                pass.set_vertex_buffer(0, self.rect_vbuf.slice(..));
+                pass.draw(
+                    (normal_rect_vert_count as u32)..(rect_verts.len() as u32),
+                    0..1,
+                );
+            }
+
+            if image_verts.len() > normal_image_vert_count && !fixed_drawable_images.is_empty() {
+                pass.set_pipeline(&self.image_pipeline);
+                pass.set_vertex_buffer(0, self.image_vbuf.slice(..));
+
+                for (i, im) in fixed_drawable_images.iter().enumerate() {
+                    if let Some(cached) = self.image_cache.get(&im.key) {
+                        pass.set_bind_group(0, &cached.bind_group, &[]);
+                        let start =
+                            normal_image_vert_count + (i * gpu_constants::VERTICES_PER_QUAD);
+                        pass.draw(
+                            (start as u32)..((start + gpu_constants::VERTICES_PER_QUAD) as u32),
+                            0..1,
+                        );
+                    } else {
+                        eprintln!("[img] cache miss key={} src={}", im.key, im.src);
+                    }
+                }
+            }
+
+            if text_verts.len() > normal_text_vert_count {
+                pass.set_pipeline(&self.text_pipeline);
+                pass.set_bind_group(0, &self.atlas_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.text_vbuf.slice(..));
+                pass.draw(
+                    (normal_text_vert_count as u32)..(text_verts.len() as u32),
+                    0..1,
+                );
             }
         }
 
@@ -766,7 +832,8 @@ impl<'a> GPU<'a> {
                 continue;
             }
 
-            let ry = r.y - scroll_y;
+            let scroll = if r.fixed { 0.0 } else { scroll_y };
+            let ry = r.y - scroll;
 
             if ry > h || (ry + r.h) < 0.0 {
                 continue;
@@ -810,7 +877,8 @@ impl<'a> GPU<'a> {
                 continue;
             }
 
-            let ry = b.y - scroll_y;
+            let scroll = if b.fixed { 0.0 } else { scroll_y };
+            let ry = b.y - scroll;
             if ry > h || (ry + b.h) < 0.0 {
                 continue;
             }
@@ -867,7 +935,8 @@ impl<'a> GPU<'a> {
                 continue;
             }
 
-            let ry = im.y - scroll_y;
+            let scroll = if im.fixed { 0.0 } else { scroll_y };
+            let ry = im.y - scroll;
             if ry > h || (ry + im.h) < 0.0 {
                 continue;
             }
@@ -926,9 +995,10 @@ impl<'a> GPU<'a> {
             let key_size = size_px.round() as u32;
 
             let mut pen_x = t.x;
-            let baseline_y = t.y - scroll_y;
+            let scroll = if t.fixed { 0.0 } else { scroll_y };
+            let baseline_y = t.y - scroll;
 
-            let top = t.hit.y - scroll_y;
+            let top = t.hit.y - scroll;
             let bottom = top + t.hit.height;
             if bottom < 0.0 || top > h {
                 continue;

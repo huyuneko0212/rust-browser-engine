@@ -22,6 +22,29 @@ pub enum Display {
     None,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Position {
+    Static,
+    Relative,
+    Absolute,
+    Fixed,
+    Sticky,
+}
+
+impl Position {
+    pub fn is_positioned(self) -> bool {
+        !matches!(self, Position::Static)
+    }
+
+    pub fn is_out_of_flow(self) -> bool {
+        matches!(self, Position::Absolute | Position::Fixed)
+    }
+
+    pub fn behaves_like_relative(self) -> bool {
+        matches!(self, Position::Relative | Position::Sticky)
+    }
+}
+
 impl StyledNode {
     pub fn value(&self, name: &str) -> Option<&String> {
         self.specified_values.get(name)
@@ -64,6 +87,18 @@ impl StyledNode {
         }
 
         Display::Inline
+    }
+
+    /// CSS position の最小実装。
+    /// sticky はスクロール連動前の状態として relative 相当に扱う。
+    pub fn position(&self) -> Position {
+        match self.value("position").map(|s| s.trim()) {
+            Some("relative") => Position::Relative,
+            Some("absolute") => Position::Absolute,
+            Some("fixed") => Position::Fixed,
+            Some("sticky") => Position::Sticky,
+            _ => Position::Static,
+        }
     }
 
     pub fn color(&self) -> Option<[f32; 4]> {

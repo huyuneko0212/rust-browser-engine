@@ -1,0 +1,204 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>position layout test</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #f7f7f8;
+      color: #111111;
+      font-size: 16px;
+      line-height: 1.35;
+    }
+
+    body {
+      padding: 56px 20px 32px 20px;
+    }
+
+    h1 {
+      margin: 0 0 16px 0;
+      font-size: 28px;
+    }
+
+    h2 {
+      margin: 28px 0 10px 0;
+      font-size: 20px;
+    }
+
+    p {
+      margin: 8px 0;
+    }
+
+    .fixed-bar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 42px;
+      padding: 10px 18px;
+      background: #111111;
+      color: #ffffff;
+      border-bottom-width: 4px;
+      border-color: #2aa198;
+    }
+
+    .fixed-chip {
+      position: fixed;
+      top: 12px;
+      right: 18px;
+      width: 132px;
+      height: 22px;
+      background: #2aa198;
+      color: #ffffff;
+      padding: 5px 8px;
+      border-radius: 6px;
+    }
+
+    .section {
+      margin: 0 0 22px 0;
+      padding: 12px;
+      background: #ffffff;
+      border: 2px solid #dddddd;
+      border-radius: 6px;
+    }
+
+    .row {
+      margin: 8px 0;
+      height: 30px;
+      background: #e8e8e8;
+      padding: 8px;
+    }
+
+    .relative-box {
+      position: relative;
+      left: 28px;
+      top: 14px;
+      width: 260px;
+      height: 42px;
+      padding: 8px;
+      background: #ffdd57;
+      border: 2px solid #111111;
+    }
+
+    .relative-after {
+      width: 260px;
+      height: 30px;
+      padding: 8px;
+      background: #d7f0ff;
+      border: 2px solid #3973ac;
+    }
+
+    .anchor {
+      position: relative;
+      width: 520px;
+      height: 230px;
+      padding: 14px;
+      background: #eef9f2;
+      border: 2px solid #32824a;
+      border-radius: 6px;
+    }
+
+    .absolute-left {
+      position: absolute;
+      top: 42px;
+      left: 36px;
+      width: 180px;
+      height: 54px;
+      padding: 10px;
+      background: #ff9f80;
+      border: 2px solid #8a2f1b;
+    }
+
+    .absolute-right {
+      position: absolute;
+      right: 24px;
+      bottom: 24px;
+      width: 170px;
+      height: 54px;
+      padding: 10px;
+      background: #b7e4c7;
+      border: 2px solid #2d6a4f;
+    }
+
+    .absolute-inset {
+      position: absolute;
+      inset: 118px 230px 34px 250px;
+      padding: 8px;
+      background: #d4c2fc;
+      border: 2px solid #5a3ea1;
+    }
+
+    .flow-check {
+      width: 210px;
+      height: 28px;
+      padding: 8px;
+      background: #d7f0ff;
+      border: 2px solid #3973ac;
+    }
+
+    .image-anchor {
+      position: relative;
+      width: 360px;
+      height: 180px;
+      padding: 12px;
+      background: #fff4d6;
+      border: 2px solid #c47f00;
+    }
+
+    .image-anchor img {
+      position: absolute;
+      right: 18px;
+      top: 18px;
+      width: 96px;
+      height: 96px;
+    }
+
+    .spacer {
+      height: 680px;
+      background: #ececec;
+      padding: 12px;
+      border: 2px solid #cccccc;
+    }
+  </style>
+</head>
+<body>
+  <div class="fixed-bar">fixed bar: this should stay at the top while scrolling.</div>
+  <div class="fixed-chip">fixed chip</div>
+
+  <h1>CSS position layout test</h1>
+  <p>Use this page to check relative, absolute, fixed, and inset positioning.</p>
+
+  <div class="section">
+    <h2>relative</h2>
+    <div class="row">normal block before relative</div>
+    <div class="relative-box">relative box: shifted right 28px and down 14px</div>
+    <div class="relative-after">next block: flow position should not be pushed by the visual shift</div>
+  </div>
+
+  <div class="section">
+    <h2>absolute inside positioned container</h2>
+    <div class="anchor">
+      container: position relative
+      <div class="absolute-left">absolute top/left</div>
+      <div class="absolute-right">absolute right/bottom</div>
+      <div class="absolute-inset">absolute inset shorthand</div>
+      <div class="flow-check">normal child: absolute boxes should not move this flow item</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>absolute image</h2>
+    <div class="image-anchor">
+      image should sit at the top right of this positioned box.
+      <img src="150x150.png" alt="positioned image">
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>scroll check</h2>
+    <div class="spacer">Scroll down. The fixed bar and chip should remain attached to the viewport.</div>
+  </div>
+</body>
+</html>

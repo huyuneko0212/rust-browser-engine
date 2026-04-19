@@ -1,5 +1,6 @@
 use crate::constants::{color, display as display_constants, layout as layout_constants};
 use crate::layout::{BoxType, CornerRadii, LayoutBox};
+use crate::style::Position;
 use fontdue::Font;
 use std::cmp::Ordering;
 
@@ -26,6 +27,7 @@ pub struct DrawRect {
     pub base_color: [f32; 4], // hover解除で戻す用
     pub href: Option<String>, // 下線だけリンクに紐付ける（背景はNone）
     pub link_id: Option<usize>,
+    pub fixed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +42,7 @@ pub struct DrawBorder {
 
     pub color: [f32; 4],
     pub href: Option<String>,
+    pub fixed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +57,7 @@ pub struct DrawText {
 
     pub href: Option<String>,
     pub hit: crate::layout::Rect,
+    pub fixed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +73,7 @@ pub struct DrawImage {
     pub alt: Option<String>,
     pub href: Option<String>,
     pub hit: crate::layout::Rect,
+    pub fixed: bool,
 }
 
 /// base_url を受け取って、画像 src を正規化できるようにする
@@ -79,11 +84,23 @@ pub fn build_display_list(
     base_url: &crate::url::URL,
 ) {
     out.clear();
-    walk(root, out, font, base_url);
+    walk(root, out, font, base_url, false);
     merge_adjacent_link_underlines(out);
 }
 
-fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url: &crate::url::URL) {
+fn walk(
+    node: &LayoutBox<'_>,
+    out: &mut Vec<DisplayItem>,
+    font: &Font,
+    base_url: &crate::url::URL,
+    fixed_context: bool,
+) {
+    let fixed = fixed_context
+        || node
+            .get_style_node()
+            .map(|sn| sn.position() == Position::Fixed)
+            .unwrap_or(false);
+
     // style/script/head/title/meta/link は描画しない（配下も止める）
     if let Some(sn) = node.get_style_node() {
         if let crate::dom::NodeType::Element(ed) = &sn.node.node_type {
@@ -121,6 +138,7 @@ fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url:
                                 base_color: bg,
                                 href: None,
                                 link_id: None,
+                                fixed,
                             }));
                         }
                     }
@@ -169,6 +187,7 @@ fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url:
                         base_color: bg,
                         href: None,
                         link_id: None,
+                        fixed,
                     }));
                 }
 
@@ -192,6 +211,7 @@ fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url:
                         border_width,
                         color: border_color,
                         href: None,
+                        fixed,
                     }));
                 }
             }
@@ -227,6 +247,7 @@ fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url:
                             width: font_size,
                             height: line_h,
                         },
+                        fixed,
                     }));
                 }
             }
@@ -264,6 +285,7 @@ fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url:
                                 base_color,
                                 href: sn.link_href.clone(),
                                 hit: c.clone(),
+                                fixed,
                             }));
 
                             if underline_allowed {
@@ -279,6 +301,7 @@ fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url:
                                     base_color,
                                     href: sn.link_href.clone(),
                                     link_id: sn.link_id,
+                                    fixed,
                                 }));
                             }
                         }
@@ -298,6 +321,7 @@ fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url:
                                 base_color,
                                 href: sn.link_href.clone(),
                                 hit: c.clone(),
+                                fixed,
                             }));
 
                             if underline_allowed {
@@ -313,6 +337,7 @@ fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url:
                                     base_color,
                                     href: sn.link_href.clone(),
                                     link_id: sn.link_id,
+                                    fixed,
                                 }));
                             }
                         }
@@ -342,7 +367,7 @@ fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url:
                 } else if src_raw.is_empty() {
                     // src が無い/空 → alt だけ出す
                     if let Some(alt_text) = alt {
-                        push_alt_text(out, sn, c, alt_text);
+                        push_alt_text(out, sn, c, alt_text, fixed);
                     }
                 } else {
                     // src を base_url で解決して、正規化キーを作る
@@ -361,12 +386,13 @@ fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url:
                             alt,
                             href: sn.link_href.clone(),
                             hit: c.clone(),
+                            fixed,
                         }));
                     } else if let Some(alt_text) = alt {
-                        push_alt_text(out, sn, c, alt_text);
+                        push_alt_text(out, sn, c, alt_text, fixed);
                     } else {
                         // alt すら無いなら最低限 "[image]" を出してもいい
-                        // push_alt_text(out, sn, c, "[image]".to_string());
+                        // push_alt_text(out, sn, c, "[image]".to_string(), fixed);
                     }
                 }
             }
@@ -374,7 +400,7 @@ fn walk(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, font: &Font, base_url:
     }
 
     for child in &node.children {
-        walk(child, out, font, base_url);
+        walk(child, out, font, base_url, fixed);
     }
 }
 
@@ -456,6 +482,7 @@ fn compare_underlines(a: &(usize, DrawRect), b: &(usize, DrawRect)) -> Ordering 
         .then_with(|| cmp_f32(ar.h, br.h))
         .then_with(|| cmp_color(ar.color, br.color))
         .then_with(|| cmp_color(ar.base_color, br.base_color))
+        .then_with(|| ar.fixed.cmp(&br.fixed))
         .then_with(|| cmp_f32(ar.x, br.x))
         .then_with(|| a.0.cmp(&b.0))
 }
@@ -465,6 +492,7 @@ fn can_join_underlines(a: &DrawRect, b: &DrawRect) -> bool {
         || a.href != b.href
         || a.color != b.color
         || a.base_color != b.base_color
+        || a.fixed != b.fixed
     {
         return false;
     }
@@ -511,6 +539,7 @@ mod tests {
             base_color: color,
             href: Some("https://example.com".to_string()),
             link_id: Some(link_id),
+            fixed: false,
         })
     }
 
@@ -724,6 +753,7 @@ fn push_alt_text(
     sn: &crate::style::StyledNode,
     c: &crate::layout::Rect,
     text: String,
+    fixed: bool,
 ) {
     let font_size = font_size_px(sn).unwrap_or(layout_constants::DEFAULT_FONT_SIZE_PX);
     let color = sn.color().unwrap_or(color::DEFAULT_TEXT);
@@ -738,5 +768,6 @@ fn push_alt_text(
         base_color,
         href: sn.link_href.clone(),
         hit: c.clone(),
+        fixed,
     }));
 }
