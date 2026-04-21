@@ -167,7 +167,11 @@ fn request_with_tls(url: &URL, tls: &TlsConnector) -> Result<Response, HttpError
 fn request_file(url: &URL) -> Result<Response, HttpError> {
     let mut fs_path = url.path.clone();
     fs_path = fs_path.replace('\\', "/");
-    let fs_path_os = fs_path.replace('/', "\\");
+    let fs_path_os = if cfg!(windows) {
+        fs_path.replace('/', "\\")
+    } else {
+        fs_path.clone()
+    };
 
     let bytes = std::fs::read(&fs_path_os).map_err(HttpError::File)?;
     let content_type = guess_content_type_from_path(&fs_path);
@@ -395,12 +399,24 @@ fn guess_content_type_from_path(path: &str) -> Option<String> {
 }
 
 fn debug_url(u: &URL) -> String {
-    format!("{}://{}:{}{}", u.scheme, u.host, u.port, u.path)
+    match u.scheme.as_str() {
+        "file" => {
+            if u.path.starts_with('/') {
+                format!("file://{}", u.path)
+            } else {
+                format!("file:///{}", u.path)
+            }
+        }
+        _ => format!("{}://{}:{}{}", u.scheme, u.host, u.port, u.path),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::url::URL;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn response_with(content_type: Option<&str>, body: Vec<u8>) -> Response {
         Response {
@@ -426,5 +442,30 @@ mod tests {
         );
 
         assert_eq!(response.body_text_with_charset("shift_jis"), "世界");
+    }
+
+    #[test]
+    fn debug_url_formats_file_urls_without_host_or_port_noise() {
+        let url = URL::new("file:///tmp/example.html");
+
+        assert_eq!(debug_url(&url), "file:///tmp/example.html");
+    }
+
+    #[test]
+    fn request_file_reads_posix_paths() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("rust-browser-engine-{unique}.html"));
+        fs::write(&path, b"<p>ok</p>").unwrap();
+
+        let url = URL::new(&format!("file://{}", path.to_string_lossy()));
+        let resp = request_file(&url).unwrap();
+
+        assert_eq!(resp.status_code, http_status::OK);
+        assert_eq!(resp.body, b"<p>ok</p>");
+
+        let _ = fs::remove_file(path);
     }
 }
