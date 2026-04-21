@@ -65,7 +65,6 @@ pub mod gpu {
     pub const MIN_TEXT_SIZE_PX: f32 = 8.0;
     pub const VERTICES_PER_QUAD: usize = 6;
     pub const RGBA_BYTES_PER_PIXEL: u32 = 4;
-    pub const FONT_COLLECTION_INDEX: u32 = 0;
 }
 
 pub mod layout {

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fs;
 
 use wgpu::*;
 use winit::window::Window;
@@ -325,8 +324,8 @@ impl<'a> GPU<'a> {
         };
         surface.configure(&device, &config);
 
-        // ---------- load font (Meiryo) ----------
-        let font = load_meiryo_font();
+        // ---------- load bundled UI font ----------
+        let font = crate::font::load_default_ui_font();
 
         // ---------- rect pipeline ----------
         let rect_shader = device.create_shader_module(ShaderModuleDescriptor {
@@ -1188,32 +1187,6 @@ impl<'a> GPU<'a> {
         );
         self.image_cache.get(key)
     }
-}
-
-// ----------------- font loader -----------------
-
-fn load_meiryo_font() -> fontdue::Font {
-    let candidates = [
-        r"C:\Windows\Fonts\meiryo.ttc",
-        r"C:\Windows\Fonts\meiryob.ttc",
-        r"C:\Windows\Fonts\YuGothR.ttc",
-        r"C:\Windows\Fonts\msgothic.ttc",
-    ];
-
-    for p in candidates {
-        if let Ok(bytes) = fs::read(p) {
-            let settings = fontdue::FontSettings {
-                collection_index: gpu_constants::FONT_COLLECTION_INDEX,
-                ..Default::default()
-            };
-            if let Ok(font) = fontdue::Font::from_bytes(bytes, settings) {
-                println!("Font loaded: {}", p);
-                return font;
-            }
-        }
-    }
-
-    panic!("日本語フォントが見つからない: C:\\Windows\\Fonts\\meiryo.ttc 等を確認して");
 }
 
 fn push_rect_vertices(

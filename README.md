@@ -188,13 +188,27 @@ Rust Browser (winit0.29 + wgpu0.19)
 
 ## 動作環境メモ
 
-現状は Windows 前提の実装です。
+現状は描画まわりで Windows 寄りの前提が一部ありますが、フォントは設定で差し替えられ、未指定時は OS ごとの既定候補を使います。
 
-- `src/main.rs` で `C:\Windows\Fonts\meiryo.ttc` を直接読んでいます
-- `src/gpu.rs` では Windows の日本語フォントを複数候補から探します
+- アプリ本体の既定フォントは `browser.conf` の `font.path` で切り替えられます
+- `font.path` を書かなければ Windows / macOS / Linux の既定候補フォントを使います
+- `assets/fonts/` はローカル配置用で、`.gitignore` に含めています
 - `assets/DejaVuSans.ttf` は主にテスト用フォントとして使っています
 
-そのため、非 Windows 環境で動かすにはフォント読み込み部分の修正が必要です。
+## フォント設定
+
+リポジトリルートの `browser.conf` を編集すると、使うフォントを簡単に変更できます。
+
+```conf
+# If omitted, the browser uses the OS default UI font for the current platform.
+# Paths are resolved relative to this file.
+# font.path = assets/fonts/PixelMplus-20130602/PixelMplus12-Regular.ttf
+```
+
+- `font.path` が未設定なら OS ごとの既定フォント候補を探します
+- 相対パスは `browser.conf` がある場所を基準に解決します
+- 絶対パスも指定できます
+- `assets/fonts/` に置いたローカルフォントは Git に含まれません
 
 ## ディレクトリ構成
 

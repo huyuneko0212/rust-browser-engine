@@ -1,6 +1,8 @@
 mod constants;
+mod config;
 mod css;
 mod dom;
+mod font;
 mod html;
 mod http;
 mod layout;
@@ -452,8 +454,7 @@ fn build_display_list_for_viewport(
 }
 
 fn load_layout_font() -> fontdue::Font {
-    let font_bytes = std::fs::read(r"C:\Windows\Fonts\meiryo.ttc").unwrap();
-    fontdue::Font::from_bytes(font_bytes, fontdue::FontSettings::default()).unwrap()
+    crate::font::load_default_ui_font()
 }
 
 // ------------------------------------------------------------
