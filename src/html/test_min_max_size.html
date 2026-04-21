@@ -1,0 +1,274 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>min/max size layout test</title>
+  <style>
+    html {
+      font-size: 20px;
+      background: #f3efe7;
+      color: #18212b;
+    }
+
+    body {
+      margin: 0;
+      padding: 24px;
+      line-height: 1.4;
+      background: #efe7db;
+    }
+
+    h1 {
+      margin: 0 0 12px 0;
+      font-size: 1.8rem;
+    }
+
+    h2 {
+      margin: 0 0 0.7rem 0;
+      font-size: 1.15rem;
+    }
+
+    p {
+      margin: 0.45rem 0;
+    }
+
+    .page {
+      max-width: 46rem;
+      margin: 0 auto;
+    }
+
+    .hint {
+      color: #56616f;
+      font-size: 0.82rem;
+    }
+
+    .section {
+      margin: 0 0 1.2rem 0;
+      padding: 1rem;
+      background: #fffbf5;
+      border: 0.12rem solid #d3c7b7;
+      border-radius: 0.75rem;
+    }
+
+    .sample {
+      margin-top: 0.8rem;
+    }
+
+    .frame {
+      width: 18rem;
+      margin: 0;
+      padding: 0.75rem;
+      background: #f8f0cf;
+      border: 0.14rem solid #b28b00;
+      border-radius: 0.6rem;
+    }
+
+    .centered-strip {
+      max-width: 12rem;
+      height: 3rem;
+      margin: 0 auto;
+      padding: 0.6rem;
+      background: #d6e9ff;
+      border: 0.16rem solid #356fa3;
+      border-radius: 0.6rem;
+    }
+
+    .narrow-wrap {
+      width: 9rem;
+      margin: 0;
+      padding: 0.75rem;
+      background: #ffe6cc;
+      border: 0.14rem solid #c56f1a;
+      border-radius: 0.6rem;
+    }
+
+    .force-min-width {
+      width: 4rem;
+      min-width: 8rem;
+      height: 2.5rem;
+      margin: 0;
+      padding: 0.5rem;
+      background: #ffd6d6;
+      border: 0.16rem solid #a63d40;
+      border-radius: 0.6rem;
+    }
+
+    .height-row {
+      width: 14rem;
+      margin: 0 0 0.8rem 0;
+      padding: 0.75rem;
+      background: #edf3f8;
+      border: 0.14rem solid #8aa0b3;
+      border-radius: 0.6rem;
+    }
+
+    .floor-box {
+      min-height: 5rem;
+      margin: 0;
+      padding: 0.6rem;
+      background: #dff5e6;
+      border: 0.16rem solid #2d6a4f;
+      border-radius: 0.6rem;
+    }
+
+    .ceiling-box {
+      height: 7rem;
+      max-height: 3rem;
+      margin: 0;
+      padding: 0.6rem;
+      background: #ffd8b8;
+      border: 0.16rem solid #b85c00;
+      border-radius: 0.6rem;
+    }
+
+    .auto-clamp {
+      max-height: 4rem;
+      margin: 0;
+      padding: 0.6rem;
+      background: #e6defb;
+      border: 0.16rem solid #5d43a8;
+      border-radius: 0.6rem;
+    }
+
+    .auto-clamp .tall-child {
+      width: 9rem;
+      height: 6rem;
+      margin: 0;
+      padding: 0.4rem;
+      background: #cab8f5;
+      border: 0.12rem solid #5d43a8;
+      border-radius: 0.4rem;
+    }
+
+    .anchor {
+      position: relative;
+      width: 16rem;
+      min-height: 6rem;
+      margin: 0;
+      padding: 1rem;
+      background: #fff0dd;
+      border: 0.14rem solid #c87a21;
+      border-radius: 0.7rem;
+    }
+
+    .anchor .badge {
+      position: absolute;
+      left: 1rem;
+      bottom: 0.9rem;
+      width: 6rem;
+      height: 1.8rem;
+      padding: 0.35rem 0.55rem;
+      background: #1f485b;
+      color: #ffffff;
+      border-radius: 0.55rem;
+    }
+
+    .text-wrap {
+      width: 18rem;
+      margin: 0;
+      padding: 0.75rem;
+      background: #eef6ea;
+      border: 0.14rem solid #769767;
+      border-radius: 0.6rem;
+    }
+
+    .text-wrap .tag {
+      display: inline-block;
+      max-width: 8rem;
+      margin: 0;
+      padding: 0.35rem 0.5rem;
+      background: #dbe7ff;
+      border: 0.14rem solid #4e73b8;
+      border-radius: 0.5rem;
+    }
+
+    .image-demo {
+      font-size: 1rem;
+    }
+
+    .image-demo .img-max {
+      max-height: 2rem;
+      border: 0.16rem solid #3f3f3f;
+      border-radius: 0.4rem;
+      background: #ffffff;
+    }
+
+    .image-demo .img-min {
+      min-height: 5rem;
+      border: 0.16rem solid #3f3f3f;
+      border-radius: 0.4rem;
+      background: #ffffff;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>min/max size test page</h1>
+    <p class="hint">
+      Root font-size is 20px. Use this page to visually check min-width, max-width, min-height, and max-height.
+    </p>
+
+    <div class="section">
+      <h2>max-width with auto margins</h2>
+      <p>The blue card should clamp to 12rem and stay centered inside the yellow frame.</p>
+      <div class="sample frame">
+        frame width = 18rem
+        <div class="centered-strip">max-width: 12rem; margin: 0 auto</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>min-width overriding a smaller width</h2>
+      <p>The red box has <code>width: 4rem</code> but should expand to <code>min-width: 8rem</code>.</p>
+      <div class="sample narrow-wrap">
+        wrap width = 9rem
+        <div class="force-min-width">forced to 8rem</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>height floors and ceilings</h2>
+      <p>The green box should become 5rem tall even without content. The orange box should shrink from 7rem down to 3rem.</p>
+      <div class="sample height-row">
+        <div class="floor-box">min-height: 5rem</div>
+      </div>
+      <div class="height-row">
+        <div class="ceiling-box">height: 7rem + max-height: 3rem</div>
+      </div>
+      <p>The purple parent below uses <code>max-height: 4rem</code>. Its inner child is taller and may visually extend past the parent because overflow is still visible.</p>
+      <div class="height-row">
+        <div class="auto-clamp">
+          <div class="tall-child">child height = 6rem</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>positioned container with min-height</h2>
+      <p>The dark badge should sit near the bottom edge of the orange area because the positioned parent has <code>min-height: 6rem</code>.</p>
+      <div class="sample anchor">
+        anchor box with no tall flow content
+        <div class="badge">bottom: 0.9rem</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>inline-block max-width</h2>
+      <p>The blue tag should clamp to 8rem and wrap its own text instead of growing wider.</p>
+      <p class="sample text-wrap">
+        before
+        <span class="tag">inline-block tag with long text inside</span>
+        after
+      </p>
+    </div>
+
+    <div class="section">
+      <h2>image min-height and max-height</h2>
+      <p>The first image should be short because of <code>max-height: 2rem</code>. The second should be taller because of <code>min-height: 5rem</code>.</p>
+      <p class="sample image-demo">
+        <img class="img-max" src="150x150.png" alt="max height image">
+        <img class="img-min" src="150x150.png" alt="min height image">
+      </p>
+    </div>
+  </div>
+</body>
+</html>

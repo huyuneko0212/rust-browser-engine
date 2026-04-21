@@ -499,8 +499,9 @@ impl<'a> LayoutBox<'a> {
         img_cache: &dyn ImageSizeProvider,
     ) {
         self.calculate_block_model(containing_block.clone());
+        let style_node = self.get_style_node();
 
-        let (font_size, line_h, text_opt, img_opt) = if let Some(sn) = self.get_style_node() {
+        let (font_size, line_h, text_opt, img_opt) = if let Some(sn) = style_node {
             let fs = font_size_px(sn).unwrap_or(layout_constants::DEFAULT_FONT_SIZE_PX);
             let lh = line_height_px(sn, fs);
 
@@ -523,6 +524,20 @@ impl<'a> LayoutBox<'a> {
         };
 
         if let Some((iw, ih)) = img_opt {
+            let viewport_w = containing_block
+                .content
+                .width
+                .max(layout_constants::MIN_LAYOUT_SIZE_PX);
+            let viewport_h = containing_block
+                .content
+                .height
+                .max(layout_constants::MIN_LAYOUT_SIZE_PX);
+            let containing_h = containing_block
+                .content
+                .height
+                .max(layout_constants::MIN_LAYOUT_SIZE_PX);
+            let (min_height, max_height) =
+                parse_height_constraints(style_node, containing_h, viewport_w, viewport_h);
             let d = &mut self.dimensions;
             d.content.x = containing_block.content.x;
             d.content.y = containing_block.content.y;
@@ -532,7 +547,11 @@ impl<'a> LayoutBox<'a> {
                     .width
                     .max(layout_constants::MIN_LAYOUT_SIZE_PX),
             );
-            d.content.height = ih.max(layout_constants::MIN_LAYOUT_SIZE_PX);
+            d.content.height = clamp_height_to_constraints(
+                ih.max(layout_constants::MIN_LAYOUT_SIZE_PX),
+                min_height,
+                max_height,
+            );
             sync_paint_fragments_with_content_rect(self);
             return;
         }
@@ -834,6 +853,8 @@ impl<'a> LayoutBox<'a> {
             .max(layout_constants::MIN_LAYOUT_SIZE_PX);
         let parent_w = containing_block.content.width;
         let style_node = self.get_style_node();
+        let (min_width, max_width) =
+            parse_width_constraints(style_node, parent_w, viewport_w, viewport_h);
 
         let width_str = style_node.and_then(|s| s.value("width")).cloned();
 
@@ -873,6 +894,7 @@ impl<'a> LayoutBox<'a> {
         let resolved_width = width_str
             .as_deref()
             .and_then(|ws| parse_length(style_node, ws, parent_w, viewport_w, viewport_h));
+        let has_explicit_width = resolved_width.is_some();
 
         let d = &mut self.dimensions;
 
@@ -880,7 +902,7 @@ impl<'a> LayoutBox<'a> {
             d.content.width = w.max(0.0);
         }
 
-        if d.content.width == 0.0 {
+        if !has_explicit_width {
             let available = containing_block.content.width
                 - d.margin.left
                 - d.margin.right
@@ -890,6 +912,8 @@ impl<'a> LayoutBox<'a> {
                 - d.border.right;
             d.content.width = available.max(0.0);
         }
+
+        d.content.width = clamp_width_to_constraints(d.content.width, min_width, max_width);
 
         if ml_auto || mr_auto {
             let used =
@@ -916,6 +940,8 @@ impl<'a> LayoutBox<'a> {
             .max(layout_constants::MIN_LAYOUT_SIZE_PX);
         let parent_w = positioning_block.content.width;
         let style_node = self.get_style_node();
+        let (min_width, max_width) =
+            parse_width_constraints(style_node, parent_w, viewport_w, viewport_h);
 
         let width_str = style_node.and_then(|s| s.value("width")).cloned();
         let insets = self.specified_insets(parent_w, viewport_h, viewport_w, viewport_h);
@@ -925,7 +951,7 @@ impl<'a> LayoutBox<'a> {
         let d = &mut self.dimensions;
 
         if let Some(w) = resolved_width {
-            d.content.width = w.max(0.0);
+            d.content.width = clamp_width_to_constraints(w.max(0.0), min_width, max_width);
             return;
         }
 
@@ -939,7 +965,7 @@ impl<'a> LayoutBox<'a> {
                 - d.padding.right
                 - d.border.left
                 - d.border.right;
-            d.content.width = available.max(0.0);
+            d.content.width = clamp_width_to_constraints(available.max(0.0), min_width, max_width);
             return;
         }
 
@@ -950,7 +976,7 @@ impl<'a> LayoutBox<'a> {
             - d.padding.right
             - d.border.left
             - d.border.right;
-        d.content.width = available.max(0.0);
+        d.content.width = clamp_width_to_constraints(available.max(0.0), min_width, max_width);
     }
 
     fn calculate_float_block_width(
@@ -958,6 +984,15 @@ impl<'a> LayoutBox<'a> {
         containing_block: Dimensions,
         img_cache: &dyn ImageSizeProvider,
     ) {
+        let viewport_w = containing_block.content.width;
+        let viewport_h = containing_block
+            .content
+            .height
+            .max(layout_constants::MIN_LAYOUT_SIZE_PX);
+        let parent_w = containing_block.content.width;
+        let style_node = self.get_style_node();
+        let (min_width, max_width) =
+            parse_width_constraints(style_node, parent_w, viewport_w, viewport_h);
         let width_str = self
             .get_style_node()
             .and_then(|s| s.value("width"))
@@ -984,6 +1019,8 @@ impl<'a> LayoutBox<'a> {
                     d.content.width = iw
                         .max(layout_constants::MIN_LAYOUT_SIZE_PX)
                         .min(available.max(layout_constants::MIN_LAYOUT_SIZE_PX));
+                    d.content.width =
+                        clamp_width_to_constraints(d.content.width, min_width, max_width);
                 }
             }
         }
@@ -1002,12 +1039,15 @@ impl<'a> LayoutBox<'a> {
             .max(layout_constants::MIN_LAYOUT_SIZE_PX);
         let parent_w = containing_block.content.width;
         let style_node = self.get_style_node();
+        let (min_width, max_width) =
+            parse_width_constraints(style_node, parent_w, viewport_w, viewport_h);
 
         let width_str = style_node.and_then(|s| s.value("width")).cloned();
 
         if let Some(ws) = width_str.as_deref() {
             if let Some(w) = parse_length(style_node, ws, parent_w, viewport_w, viewport_h) {
-                self.dimensions.content.width = w.max(0.0);
+                self.dimensions.content.width =
+                    clamp_width_to_constraints(w.max(0.0), min_width, max_width);
                 return;
             }
         }
@@ -1027,7 +1067,7 @@ impl<'a> LayoutBox<'a> {
         .min(available)
         .max(0.0);
 
-        self.dimensions.content.width = estimated;
+        self.dimensions.content.width = clamp_width_to_constraints(estimated, min_width, max_width);
     }
 
     fn calculate_block_position(&mut self, containing_block: Dimensions) {
@@ -1149,63 +1189,55 @@ impl<'a> LayoutBox<'a> {
     }
 
     fn calculate_block_height_with_font(&mut self, font: &Font, img_cache: &dyn ImageSizeProvider) {
-        let (h_str, viewport_w, viewport_h, parent_w) = {
-            let vw = self
-                .dimensions
-                .content
-                .width
-                .max(layout_constants::MIN_LAYOUT_SIZE_PX);
-            (
-                self.get_style_node()
-                    .and_then(|s| s.value("height"))
-                    .cloned(),
-                vw,
-                layout_constants::DEFAULT_VIEWPORT_HEIGHT_PX,
-                vw,
-            )
-        };
-
-        if let Some(hs) = h_str.as_deref() {
-            if let Some(h) =
-                parse_length(self.get_style_node(), hs, parent_w, viewport_w, viewport_h)
-            {
-                self.dimensions.content.height = h.max(0.0);
-                return;
-            }
-        }
+        let style_node = self.get_style_node();
+        let viewport_w = self
+            .dimensions
+            .content
+            .width
+            .max(layout_constants::MIN_LAYOUT_SIZE_PX);
+        let viewport_h = layout_constants::DEFAULT_VIEWPORT_HEIGHT_PX;
+        let parent_h = viewport_w;
+        let (min_height, max_height) =
+            parse_height_constraints(style_node, parent_h, viewport_w, viewport_h);
+        let mut resolved_height = style_node
+            .and_then(|s| s.value("height"))
+            .and_then(|value| parse_length(style_node, value, parent_h, viewport_w, viewport_h))
+            .map(|height| height.max(0.0))
+            .unwrap_or(self.dimensions.content.height.max(0.0));
 
         let has_any_child = !self.children.is_empty();
         if !has_any_child {
-            if let Some(sn) = self.get_style_node() {
+            if let Some(sn) = style_node {
                 if let crate::dom::NodeType::Element(ed) = &sn.node.node_type {
                     if ed.tag_name == "img" {
                         let (_iw, ih) = img_intrinsic_size_px(sn, img_cache);
-                        self.dimensions.content.height =
-                            ih.max(layout_constants::MIN_LAYOUT_SIZE_PX);
-                        return;
+                        resolved_height = ih.max(layout_constants::MIN_LAYOUT_SIZE_PX);
+                    } else {
+                        let mut buf = String::new();
+                        collect_text_nodes(sn, &mut buf);
+
+                        let txt = buf.trim();
+                        if !txt.is_empty() {
+                            let font_size =
+                                font_size_px(sn).unwrap_or(layout_constants::DEFAULT_FONT_SIZE_PX);
+                            let line_h = line_height_px(sn, font_size);
+                            let max_w = self
+                                .dimensions
+                                .content
+                                .width
+                                .max(layout_constants::MIN_LAYOUT_SIZE_PX);
+
+                            let lines = count_lines_fontdue(font, txt, max_w, font_size).max(1);
+                            let text_h = (lines as f32) * line_h;
+                            resolved_height = resolved_height.max(text_h);
+                        }
                     }
-                }
-
-                let mut buf = String::new();
-                collect_text_nodes(sn, &mut buf);
-
-                let txt = buf.trim();
-                if !txt.is_empty() {
-                    let font_size =
-                        font_size_px(sn).unwrap_or(layout_constants::DEFAULT_FONT_SIZE_PX);
-                    let line_h = line_height_px(sn, font_size);
-                    let max_w = self
-                        .dimensions
-                        .content
-                        .width
-                        .max(layout_constants::MIN_LAYOUT_SIZE_PX);
-
-                    let lines = count_lines_fontdue(font, txt, max_w, font_size).max(1);
-                    let text_h = (lines as f32) * line_h;
-                    self.dimensions.content.height = self.dimensions.content.height.max(text_h);
                 }
             }
         }
+
+        self.dimensions.content.height =
+            clamp_height_to_constraints(resolved_height, min_height, max_height);
     }
 
     /// ★IFC: anonymous block の中の inline subtree を “行に詰める”
@@ -1348,7 +1380,26 @@ impl<'a> LayoutBox<'a> {
 
                     if let Some((iw, ih)) = img_opt {
                         let iw = iw.max(layout_constants::MIN_LAYOUT_SIZE_PX);
-                        let ih = ih.max(layout_constants::MIN_LAYOUT_SIZE_PX);
+                        let viewport_w = max_w.max(layout_constants::MIN_LAYOUT_SIZE_PX);
+                        let viewport_h = viewport
+                            .content
+                            .height
+                            .max(layout_constants::MIN_LAYOUT_SIZE_PX);
+                        let containing_h = containing_block
+                            .content
+                            .height
+                            .max(layout_constants::MIN_LAYOUT_SIZE_PX);
+                        let (min_height, max_height) = parse_height_constraints(
+                            node.get_style_node(),
+                            containing_h,
+                            viewport_w,
+                            viewport_h,
+                        );
+                        let ih = clamp_height_to_constraints(
+                            ih.max(layout_constants::MIN_LAYOUT_SIZE_PX),
+                            min_height,
+                            max_height,
+                        );
 
                         consume_pending_space_before_item(
                             iw,
@@ -1617,23 +1668,19 @@ impl<'a> LayoutBox<'a> {
             .width
             .max(layout_constants::MIN_LAYOUT_SIZE_PX);
         let viewport_h = layout_constants::DEFAULT_VIEWPORT_HEIGHT_PX;
+        let style_node = self.get_style_node();
+        let (min_height, max_height) =
+            parse_height_constraints(style_node, viewport_w, viewport_w, viewport_h);
 
-        if let Some(height) = self
-            .get_style_node()
+        let resolved_height = style_node
             .and_then(|s| s.value("height"))
-            .and_then(|value| {
-                parse_length(
-                    self.get_style_node(),
-                    value,
-                    viewport_w,
-                    viewport_w,
-                    viewport_h,
-                )
-            })
-        {
-            containing.content.height =
-                height.max(0.0) + self.dimensions.padding.top + self.dimensions.padding.bottom;
-        }
+            .and_then(|value| parse_length(style_node, value, viewport_w, viewport_w, viewport_h))
+            .map(|height| height.max(0.0))
+            .unwrap_or(self.dimensions.content.height.max(0.0));
+        let content_height = clamp_height_to_constraints(resolved_height, min_height, max_height);
+
+        containing.content.height =
+            content_height + self.dimensions.padding.top + self.dimensions.padding.bottom;
 
         containing
     }
@@ -1776,6 +1823,78 @@ fn parse_length(
         layout_constants::DEFAULT_FONT_SIZE_PX,
         layout_constants::DEFAULT_FONT_SIZE_PX,
     )
+}
+
+fn parse_width_constraints(
+    sn: Option<&StyledNode>,
+    containing: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> (Option<f32>, Option<f32>) {
+    let Some(style_node) = sn else {
+        return (None, None);
+    };
+
+    let min_width = style_node
+        .value("min-width")
+        .and_then(|value| parse_length(Some(style_node), value, containing, viewport_w, viewport_h))
+        .map(|value| value.max(0.0));
+    let max_width = style_node
+        .value("max-width")
+        .and_then(|value| parse_length(Some(style_node), value, containing, viewport_w, viewport_h))
+        .map(|value| value.max(0.0));
+
+    (min_width, max_width)
+}
+
+fn clamp_width_to_constraints(width: f32, min_width: Option<f32>, max_width: Option<f32>) -> f32 {
+    let min_width = min_width.unwrap_or(0.0).max(0.0);
+    let max_width = max_width.map(|value| value.max(min_width));
+    let width = width.max(min_width);
+
+    if let Some(max_width) = max_width {
+        width.min(max_width)
+    } else {
+        width
+    }
+}
+
+fn parse_height_constraints(
+    sn: Option<&StyledNode>,
+    containing: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> (Option<f32>, Option<f32>) {
+    let Some(style_node) = sn else {
+        return (None, None);
+    };
+
+    let min_height = style_node
+        .value("min-height")
+        .and_then(|value| parse_length(Some(style_node), value, containing, viewport_w, viewport_h))
+        .map(|value| value.max(0.0));
+    let max_height = style_node
+        .value("max-height")
+        .and_then(|value| parse_length(Some(style_node), value, containing, viewport_w, viewport_h))
+        .map(|value| value.max(0.0));
+
+    (min_height, max_height)
+}
+
+fn clamp_height_to_constraints(
+    height: f32,
+    min_height: Option<f32>,
+    max_height: Option<f32>,
+) -> f32 {
+    let min_height = min_height.unwrap_or(0.0).max(0.0);
+    let max_height = max_height.map(|value| value.max(min_height));
+    let height = height.max(min_height);
+
+    if let Some(max_height) = max_height {
+        height.min(max_height)
+    } else {
+        height
+    }
 }
 
 fn parse_4len(
@@ -2075,40 +2194,44 @@ fn estimate_layout_box_content_width(
         );
     };
 
-    if let Some(width) = sn
+    let raw_width = if let Some(width) = sn
         .value("width")
         .and_then(|value| parse_length(Some(sn), value, containing_width, viewport_w, viewport_h))
     {
-        return width.max(0.0);
-    }
-
-    match &sn.node.node_type {
-        crate::dom::NodeType::Text(text) => {
-            let font_size = font_size_px(sn).unwrap_or(layout_constants::DEFAULT_FONT_SIZE_PX);
-            measure_collapsed_text_width(font, text, font_size)
-        }
-        crate::dom::NodeType::Element(ed) if ed.tag_name == "img" => {
-            img_intrinsic_size_px(sn, img_cache).0.max(0.0)
-        }
-        _ if node.is_inline_block_box() || matches!(node.box_type, BoxType::BlockNode(_)) => {
-            estimate_block_children_outer_width(
+        width.max(0.0)
+    } else {
+        match &sn.node.node_type {
+            crate::dom::NodeType::Text(text) => {
+                let font_size = font_size_px(sn).unwrap_or(layout_constants::DEFAULT_FONT_SIZE_PX);
+                measure_collapsed_text_width(font, text, font_size)
+            }
+            crate::dom::NodeType::Element(ed) if ed.tag_name == "img" => {
+                img_intrinsic_size_px(sn, img_cache).0.max(0.0)
+            }
+            _ if node.is_inline_block_box() || matches!(node.box_type, BoxType::BlockNode(_)) => {
+                estimate_block_children_outer_width(
+                    &node.children,
+                    font,
+                    img_cache,
+                    containing_width,
+                    viewport_w,
+                    viewport_h,
+                )
+            }
+            _ => estimate_inline_children_outer_width(
                 &node.children,
                 font,
                 img_cache,
                 containing_width,
                 viewport_w,
                 viewport_h,
-            )
+            ),
         }
-        _ => estimate_inline_children_outer_width(
-            &node.children,
-            font,
-            img_cache,
-            containing_width,
-            viewport_w,
-            viewport_h,
-        ),
-    }
+    };
+    let (min_width, max_width) =
+        parse_width_constraints(Some(sn), containing_width, viewport_w, viewport_h);
+
+    clamp_width_to_constraints(raw_width, min_width, max_width)
 }
 
 fn estimate_block_children_outer_width(
@@ -3040,6 +3163,254 @@ mod tests {
         assert!((em_box.dimensions.content.height - 30.0).abs() <= 0.5);
         assert!((rem_box.dimensions.content.width - 40.0).abs() <= 0.5);
         assert!((rem_box.dimensions.content.height - 20.0).abs() <= 0.5);
+    }
+
+    #[test]
+    fn block_auto_width_honors_max_width_and_auto_margins() {
+        let styled = styled_tree_with_css(
+            r#"<div id="page"></div>"#,
+            r#"
+            #page {
+                display: block;
+                max-width: 120px;
+                height: 10px;
+                margin: 0 auto;
+                padding: 0;
+            }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 300.0;
+        viewport.content.height = 200.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let page = find_element_by_id(&layout, "page").unwrap();
+
+        assert!((page.dimensions.content.width - 120.0).abs() <= 0.5);
+        assert!((page.dimensions.margin.left - 90.0).abs() <= 0.5);
+        assert!((page.dimensions.margin.right - 90.0).abs() <= 0.5);
+    }
+
+    #[test]
+    fn explicit_width_is_clamped_by_min_and_max_width() {
+        let styled = styled_tree_with_css(
+            r#"<div id="min"></div><div id="max"></div>"#,
+            r#"
+            #min {
+                display: block;
+                width: 40px;
+                min-width: 90px;
+                height: 10px;
+                margin: 0;
+                padding: 0;
+            }
+            #max {
+                display: block;
+                width: 180px;
+                max-width: 120px;
+                height: 10px;
+                margin: 0;
+                padding: 0;
+            }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 300.0;
+        viewport.content.height = 200.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let min_box = find_element_by_id(&layout, "min").unwrap();
+        let max_box = find_element_by_id(&layout, "max").unwrap();
+
+        assert!((min_box.dimensions.content.width - 90.0).abs() <= 0.5);
+        assert!((max_box.dimensions.content.width - 120.0).abs() <= 0.5);
+    }
+
+    #[test]
+    fn auto_and_explicit_heights_are_clamped_by_min_and_max_height() {
+        let styled = styled_tree_with_css(
+            r#"
+            <div id="auto-min"></div>
+            <div id="auto-max"><div id="inner"></div></div>
+            <div id="explicit-min"></div>
+            <div id="explicit-max"></div>
+            "#,
+            r#"
+            #auto-min {
+                display: block;
+                width: 100px;
+                min-height: 80px;
+                margin: 0;
+                padding: 0;
+            }
+            #auto-max {
+                display: block;
+                width: 100px;
+                max-height: 50px;
+                margin: 0;
+                padding: 0;
+            }
+            #inner {
+                display: block;
+                width: 100px;
+                height: 100px;
+                margin: 0;
+                padding: 0;
+            }
+            #explicit-min {
+                display: block;
+                width: 100px;
+                height: 20px;
+                min-height: 70px;
+                margin: 0;
+                padding: 0;
+            }
+            #explicit-max {
+                display: block;
+                width: 100px;
+                height: 120px;
+                max-height: 45px;
+                margin: 0;
+                padding: 0;
+            }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 300.0;
+        viewport.content.height = 240.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let auto_min = find_element_by_id(&layout, "auto-min").unwrap();
+        let auto_max = find_element_by_id(&layout, "auto-max").unwrap();
+        let explicit_min = find_element_by_id(&layout, "explicit-min").unwrap();
+        let explicit_max = find_element_by_id(&layout, "explicit-max").unwrap();
+
+        assert!((auto_min.dimensions.content.height - 80.0).abs() <= 0.5);
+        assert!((auto_max.dimensions.content.height - 50.0).abs() <= 0.5);
+        assert!((explicit_min.dimensions.content.height - 70.0).abs() <= 0.5);
+        assert!((explicit_max.dimensions.content.height - 45.0).abs() <= 0.5);
+    }
+
+    #[test]
+    fn positioned_container_min_height_affects_absolute_bottom_offset() {
+        let styled = styled_tree_with_css(
+            r#"<div id="container"><div id="abs"></div></div>"#,
+            r#"
+            #container {
+                display: block;
+                position: relative;
+                width: 200px;
+                min-height: 100px;
+                padding: 10px;
+                margin: 0;
+            }
+            #abs {
+                display: block;
+                position: absolute;
+                left: 0;
+                bottom: 15px;
+                width: 30px;
+                height: 10px;
+                margin: 0;
+                padding: 0;
+            }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 320.0;
+        viewport.content.height = 240.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let container = find_element_by_id(&layout, "container").unwrap();
+        let abs = find_element_by_id(&layout, "abs").unwrap();
+
+        let padding_box_y = container.dimensions.content.y - container.dimensions.padding.top;
+        let padding_box_height = container.dimensions.content.height
+            + container.dimensions.padding.top
+            + container.dimensions.padding.bottom;
+
+        assert!((container.dimensions.content.height - 100.0).abs() <= 0.5);
+        assert!(
+            (abs.dimensions.content.y - (padding_box_y + padding_box_height - 15.0 - 10.0)).abs()
+                <= 0.5
+        );
+    }
+
+    #[test]
+    fn inline_image_height_is_clamped_by_max_height() {
+        let styled = styled_tree_with_css(
+            r#"<p><img id="pic" src="150x150.png" alt=""></p>"#,
+            r#"
+            p {
+                display: block;
+                width: 240px;
+                margin: 0;
+                padding: 0;
+            }
+            #pic {
+                max-height: 40px;
+                margin: 0;
+                padding: 0;
+            }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 300.0;
+        viewport.content.height = 200.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let pic = find_element_by_id(&layout, "pic").unwrap();
+
+        assert!((pic.dimensions.content.height - 40.0).abs() <= 0.5);
+    }
+
+    #[test]
+    fn inline_block_estimate_respects_max_width_before_line_wrapping() {
+        let styled = styled_tree_with_css(
+            r#"<p>a <span id="tag">alpha beta gamma</span></p>"#,
+            r#"
+            p {
+                display: block;
+                width: 80px;
+                margin: 0;
+                padding: 0;
+            }
+            #tag {
+                display: inline-block;
+                max-width: 60px;
+                margin: 0;
+                padding: 0;
+            }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 240.0;
+        viewport.content.height = 200.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let tag = find_element_by_id(&layout, "tag").unwrap();
+        let mut fragments = Vec::new();
+        collect_fragments(&layout, &mut fragments);
+
+        let lead = fragments
+            .iter()
+            .find(|fragment| fragment.text == "a")
+            .unwrap();
+
+        assert!((tag.dimensions.content.width - 60.0).abs() <= 0.5);
+        assert!((tag.dimensions.content.y - lead.rect.y).abs() <= 0.5);
     }
 
     #[test]
