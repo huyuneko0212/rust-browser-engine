@@ -1,6 +1,6 @@
 use crate::constants::{color, display as display_constants, layout as layout_constants};
 use crate::layout::{BoxType, CornerRadii, LayoutBox};
-use crate::style::Position;
+use crate::style::{Display, Position};
 use fontdue::Font;
 use std::cmp::Ordering;
 
@@ -110,14 +110,14 @@ fn paint_node_contents(
     base_url: &crate::url::URL,
     fixed: bool,
 ) {
-    if matches!(node.box_type, BoxType::InlineNode(_)) {
+    if matches!(node.box_type, BoxType::InlineNode(_)) && !is_inline_block_box(node) {
         paint_inline_element_fragments(node, out, fixed);
     }
 
     // --------------------------------------------------------
     // BlockNode の背景 + border（border-radius 対応）
     // --------------------------------------------------------
-    if matches!(node.box_type, BoxType::BlockNode(_)) {
+    if matches!(node.box_type, BoxType::BlockNode(_)) || is_inline_block_box(node) {
         let d = &node.dimensions;
 
         // ★ border-box の矩形を計算
@@ -571,6 +571,12 @@ fn node_fixed_context(node: &LayoutBox<'_>, fixed_context: bool) -> bool {
             .unwrap_or(false)
 }
 
+fn is_inline_block_box(node: &LayoutBox<'_>) -> bool {
+    node.get_style_node()
+        .map(|sn| sn.display() == Display::InlineBlock)
+        .unwrap_or(false)
+}
+
 #[derive(Debug, Clone)]
 struct UnderlineRun {
     insert_at: usize,
@@ -847,6 +853,27 @@ mod tests {
 
         assert!(background_count >= 2);
         assert_eq!(background_count, border_count);
+    }
+
+    #[test]
+    fn inline_block_paints_single_block_box() {
+        let items = display_list_for(
+            r#"<p>before <span id="target">badge</span> after</p>"#,
+            r#"
+            p { display: block; width: 320px; margin: 0; padding: 0; }
+            #target {
+                display: inline-block;
+                padding: 4px;
+                border: 2px solid red;
+                background: #ffff00;
+            }
+            "#,
+        );
+
+        let yellow = [1.0, 1.0, 0.0, 1.0];
+
+        assert_eq!(rect_count(&items, yellow), 1);
+        assert_eq!(border_count(&items, color::RED), 1);
     }
 
     #[test]

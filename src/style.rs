@@ -18,6 +18,7 @@ pub struct StyledNode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Display {
     Inline,
+    InlineBlock,
     Block,
     None,
 }
@@ -99,10 +100,11 @@ impl StyledNode {
         }
 
         // CSSで指定があれば最優先
-        if let Some(v) = self.value("display").map(|s| s.as_str()) {
+        if let Some(v) = self.value("display").map(|s| s.trim()) {
             return match v {
                 "block" => Display::Block,
                 "inline" => Display::Inline,
+                "inline-block" => Display::InlineBlock,
                 "none" => Display::None,
                 _ => Display::Inline,
             };
@@ -874,5 +876,18 @@ mod tests {
             Some("blue")
         );
         assert_eq!(nested.value("color").map(|value| value.as_str()), None);
+    }
+
+    #[test]
+    fn display_inline_block_is_supported() {
+        let dom = crate::html::parse(r#"<p><span id="target">badge</span></p>"#.to_string());
+        let stylesheet =
+            crate::css::Parser::new(r#"#target { display: inline-block; }"#.to_string())
+                .parse_stylesheet();
+
+        let styled = style_tree(dom, &stylesheet);
+        let target = find_element_by_id(&styled, "target").expect("target span should exist");
+
+        assert_eq!(target.display(), Display::InlineBlock);
     }
 }
