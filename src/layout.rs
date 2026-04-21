@@ -581,6 +581,7 @@ impl<'a> LayoutBox<'a> {
             .height
             .max(layout_constants::MIN_LAYOUT_SIZE_PX);
         let parent_w = containing.content.width;
+        let style_node = self.get_style_node();
 
         let (
             ml_s,
@@ -605,7 +606,7 @@ impl<'a> LayoutBox<'a> {
             border_tr_radius_s,
             border_br_radius_s,
             border_bl_radius_s,
-        ) = if let Some(style) = self.get_style_node() {
+        ) = if let Some(style) = style_node {
             (
                 style.value("margin-left").cloned(),
                 style.value("margin-right").cloned(),
@@ -660,47 +661,47 @@ impl<'a> LayoutBox<'a> {
         // --- margin 個別 ---
         if let Some(v) = ml_s.as_deref() {
             if v.trim() != "auto" {
-                ml = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                ml = parse_length(style_node, v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
             }
         }
         if let Some(v) = mr_s.as_deref() {
             if v.trim() != "auto" {
-                mr = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                mr = parse_length(style_node, v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
             }
         }
         if let Some(v) = mt_s.as_deref() {
-            mt = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+            mt = parse_length(style_node, v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
         }
         if let Some(v) = mb_s.as_deref() {
-            mb = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+            mb = parse_length(style_node, v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
         }
 
         // --- padding 個別 ---
         if let Some(v) = pl_s.as_deref() {
-            pl = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+            pl = parse_length(style_node, v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
         }
         if let Some(v) = pr_s.as_deref() {
-            pr = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+            pr = parse_length(style_node, v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
         }
         if let Some(v) = pt_s.as_deref() {
-            pt = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+            pt = parse_length(style_node, v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
         }
         if let Some(v) = pb_s.as_deref() {
-            pb = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+            pb = parse_length(style_node, v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
         }
 
         // --- border-width 個別 ---
         if let Some(v) = blw_s.as_deref() {
-            bl = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+            bl = parse_length(style_node, v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
         }
         if let Some(v) = brw_s.as_deref() {
-            br = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+            br = parse_length(style_node, v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
         }
         if let Some(v) = btw_s.as_deref() {
-            bt = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+            bt = parse_length(style_node, v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
         }
         if let Some(v) = bbw_s.as_deref() {
-            bb = parse_length(v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+            bb = parse_length(style_node, v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
         }
 
         // shorthand margin（個別指定が無い場合のみ）
@@ -708,19 +709,23 @@ impl<'a> LayoutBox<'a> {
             if let Some(sh) = margin_sh.as_deref() {
                 let m = parse_4len(sh);
                 if let Some(top) = m.0.as_deref() {
-                    mt = parse_length(top, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                    mt = parse_length(style_node, top, parent_w, viewport_w, viewport_h)
+                        .unwrap_or(0.0);
                 }
                 if let Some(right) = m.1.as_deref() {
                     if right.trim() != "auto" {
-                        mr = parse_length(right, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                        mr = parse_length(style_node, right, parent_w, viewport_w, viewport_h)
+                            .unwrap_or(0.0);
                     }
                 }
                 if let Some(bottom) = m.2.as_deref() {
-                    mb = parse_length(bottom, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                    mb = parse_length(style_node, bottom, parent_w, viewport_w, viewport_h)
+                        .unwrap_or(0.0);
                 }
                 if let Some(left) = m.3.as_deref() {
                     if left.trim() != "auto" {
-                        ml = parse_length(left, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                        ml = parse_length(style_node, left, parent_w, viewport_w, viewport_h)
+                            .unwrap_or(0.0);
                     }
                 }
             }
@@ -731,16 +736,20 @@ impl<'a> LayoutBox<'a> {
             if let Some(sh) = padding_sh.as_deref() {
                 let p = parse_4len(sh);
                 if let Some(top) = p.0.as_deref() {
-                    pt = parse_length(top, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                    pt = parse_length(style_node, top, parent_w, viewport_w, viewport_h)
+                        .unwrap_or(0.0);
                 }
                 if let Some(right) = p.1.as_deref() {
-                    pr = parse_length(right, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                    pr = parse_length(style_node, right, parent_w, viewport_w, viewport_h)
+                        .unwrap_or(0.0);
                 }
                 if let Some(bottom) = p.2.as_deref() {
-                    pb = parse_length(bottom, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                    pb = parse_length(style_node, bottom, parent_w, viewport_w, viewport_h)
+                        .unwrap_or(0.0);
                 }
                 if let Some(left) = p.3.as_deref() {
-                    pl = parse_length(left, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                    pl = parse_length(style_node, left, parent_w, viewport_w, viewport_h)
+                        .unwrap_or(0.0);
                 }
             }
         }
@@ -750,16 +759,20 @@ impl<'a> LayoutBox<'a> {
             if let Some(sh) = border_width_sh.as_deref() {
                 let b = parse_4len(sh);
                 if let Some(top) = b.0.as_deref() {
-                    bt = parse_length(top, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                    bt = parse_length(style_node, top, parent_w, viewport_w, viewport_h)
+                        .unwrap_or(0.0);
                 }
                 if let Some(right) = b.1.as_deref() {
-                    br = parse_length(right, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                    br = parse_length(style_node, right, parent_w, viewport_w, viewport_h)
+                        .unwrap_or(0.0);
                 }
                 if let Some(bottom) = b.2.as_deref() {
-                    bb = parse_length(bottom, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                    bb = parse_length(style_node, bottom, parent_w, viewport_w, viewport_h)
+                        .unwrap_or(0.0);
                 }
                 if let Some(left) = b.3.as_deref() {
-                    bl = parse_length(left, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
+                    bl = parse_length(style_node, left, parent_w, viewport_w, viewport_h)
+                        .unwrap_or(0.0);
                 }
             }
         }
@@ -767,27 +780,29 @@ impl<'a> LayoutBox<'a> {
         // border-radius
         let mut border_radius = CornerRadii::default();
         if let Some(v) = border_radius_sh.as_deref() {
-            if let Some(r) = parse_border_radius_shorthand(v, parent_w, viewport_w, viewport_h) {
+            if let Some(r) =
+                parse_border_radius_shorthand(style_node, v, parent_w, viewport_w, viewport_h)
+            {
                 border_radius = r;
             }
         }
         if let Some(v) = border_tl_radius_s.as_deref() {
-            if let Some(r) = parse_corner_radius(v, parent_w, viewport_w, viewport_h) {
+            if let Some(r) = parse_corner_radius(style_node, v, parent_w, viewport_w, viewport_h) {
                 border_radius.top_left = r;
             }
         }
         if let Some(v) = border_tr_radius_s.as_deref() {
-            if let Some(r) = parse_corner_radius(v, parent_w, viewport_w, viewport_h) {
+            if let Some(r) = parse_corner_radius(style_node, v, parent_w, viewport_w, viewport_h) {
                 border_radius.top_right = r;
             }
         }
         if let Some(v) = border_br_radius_s.as_deref() {
-            if let Some(r) = parse_corner_radius(v, parent_w, viewport_w, viewport_h) {
+            if let Some(r) = parse_corner_radius(style_node, v, parent_w, viewport_w, viewport_h) {
                 border_radius.bottom_right = r;
             }
         }
         if let Some(v) = border_bl_radius_s.as_deref() {
-            if let Some(r) = parse_corner_radius(v, parent_w, viewport_w, viewport_h) {
+            if let Some(r) = parse_corner_radius(style_node, v, parent_w, viewport_w, viewport_h) {
                 border_radius.bottom_left = r;
             }
         }
@@ -818,15 +833,12 @@ impl<'a> LayoutBox<'a> {
             .height
             .max(layout_constants::MIN_LAYOUT_SIZE_PX);
         let parent_w = containing_block.content.width;
+        let style_node = self.get_style_node();
 
-        let width_str = self
-            .get_style_node()
-            .and_then(|s| s.value("width"))
-            .cloned();
+        let width_str = style_node.and_then(|s| s.value("width")).cloned();
 
         // margin:auto 判定
-        let (ml_auto, mr_auto) = self
-            .get_style_node()
+        let (ml_auto, mr_auto) = style_node
             .map(|s| {
                 let mut la = s
                     .value("margin-left")
@@ -858,13 +870,14 @@ impl<'a> LayoutBox<'a> {
                 (la, ra)
             })
             .unwrap_or((false, false));
+        let resolved_width = width_str
+            .as_deref()
+            .and_then(|ws| parse_length(style_node, ws, parent_w, viewport_w, viewport_h));
 
         let d = &mut self.dimensions;
 
-        if let Some(ws) = width_str.as_deref() {
-            if let Some(w) = parse_length(ws, parent_w, viewport_w, viewport_h) {
-                d.content.width = w.max(0.0);
-            }
+        if let Some(w) = resolved_width {
+            d.content.width = w.max(0.0);
         }
 
         if d.content.width == 0.0 {
@@ -902,19 +915,18 @@ impl<'a> LayoutBox<'a> {
             .height
             .max(layout_constants::MIN_LAYOUT_SIZE_PX);
         let parent_w = positioning_block.content.width;
+        let style_node = self.get_style_node();
 
-        let width_str = self
-            .get_style_node()
-            .and_then(|s| s.value("width"))
-            .cloned();
+        let width_str = style_node.and_then(|s| s.value("width")).cloned();
         let insets = self.specified_insets(parent_w, viewport_h, viewport_w, viewport_h);
+        let resolved_width = width_str
+            .as_deref()
+            .and_then(|ws| parse_length(style_node, ws, parent_w, viewport_w, viewport_h));
         let d = &mut self.dimensions;
 
-        if let Some(ws) = width_str.as_deref() {
-            if let Some(w) = parse_length(ws, parent_w, viewport_w, viewport_h) {
-                d.content.width = w.max(0.0);
-                return;
-            }
+        if let Some(w) = resolved_width {
+            d.content.width = w.max(0.0);
+            return;
         }
 
         if let (Some(left), Some(right)) = (insets.left, insets.right) {
@@ -989,14 +1001,12 @@ impl<'a> LayoutBox<'a> {
             .height
             .max(layout_constants::MIN_LAYOUT_SIZE_PX);
         let parent_w = containing_block.content.width;
+        let style_node = self.get_style_node();
 
-        let width_str = self
-            .get_style_node()
-            .and_then(|s| s.value("width"))
-            .cloned();
+        let width_str = style_node.and_then(|s| s.value("width")).cloned();
 
         if let Some(ws) = width_str.as_deref() {
-            if let Some(w) = parse_length(ws, parent_w, viewport_w, viewport_h) {
+            if let Some(w) = parse_length(style_node, ws, parent_w, viewport_w, viewport_h) {
                 self.dimensions.content.width = w.max(0.0);
                 return;
             }
@@ -1012,12 +1022,7 @@ impl<'a> LayoutBox<'a> {
             .max(0.0);
 
         let estimated = estimate_layout_box_content_width(
-            self,
-            font,
-            img_cache,
-            available,
-            viewport_w,
-            viewport_h,
+            self, font, img_cache, available, viewport_w, viewport_h,
         )
         .min(available)
         .max(0.0);
@@ -1161,7 +1166,9 @@ impl<'a> LayoutBox<'a> {
         };
 
         if let Some(hs) = h_str.as_deref() {
-            if let Some(h) = parse_length(hs, parent_w, viewport_w, viewport_h) {
+            if let Some(h) =
+                parse_length(self.get_style_node(), hs, parent_w, viewport_w, viewport_h)
+            {
                 self.dimensions.content.height = h.max(0.0);
                 return;
             }
@@ -1559,16 +1566,16 @@ impl<'a> LayoutBox<'a> {
 
         Insets {
             top: specified_inset(sn, InsetEdge::Top).and_then(|value| {
-                parse_inset_length(&value, vertical_basis, viewport_w, viewport_h)
+                parse_inset_length(Some(sn), &value, vertical_basis, viewport_w, viewport_h)
             }),
             right: specified_inset(sn, InsetEdge::Right).and_then(|value| {
-                parse_inset_length(&value, horizontal_basis, viewport_w, viewport_h)
+                parse_inset_length(Some(sn), &value, horizontal_basis, viewport_w, viewport_h)
             }),
             bottom: specified_inset(sn, InsetEdge::Bottom).and_then(|value| {
-                parse_inset_length(&value, vertical_basis, viewport_w, viewport_h)
+                parse_inset_length(Some(sn), &value, vertical_basis, viewport_w, viewport_h)
             }),
             left: specified_inset(sn, InsetEdge::Left).and_then(|value| {
-                parse_inset_length(&value, horizontal_basis, viewport_w, viewport_h)
+                parse_inset_length(Some(sn), &value, horizontal_basis, viewport_w, viewport_h)
             }),
         }
     }
@@ -1614,7 +1621,15 @@ impl<'a> LayoutBox<'a> {
         if let Some(height) = self
             .get_style_node()
             .and_then(|s| s.value("height"))
-            .and_then(|value| parse_length(value, viewport_w, viewport_w, viewport_h))
+            .and_then(|value| {
+                parse_length(
+                    self.get_style_node(),
+                    value,
+                    viewport_w,
+                    viewport_w,
+                    viewport_h,
+                )
+            })
         {
             containing.content.height =
                 height.max(0.0) + self.dimensions.padding.top + self.dimensions.padding.bottom;
@@ -1728,6 +1743,7 @@ fn specified_inset(sn: &StyledNode, edge: InsetEdge) -> Option<String> {
 }
 
 fn parse_inset_length(
+    sn: Option<&StyledNode>,
     value: &str,
     containing: f32,
     viewport_w: f32,
@@ -1738,31 +1754,28 @@ fn parse_inset_length(
         return None;
     }
 
-    parse_length(t, containing, viewport_w, viewport_h)
+    parse_length(sn, t, containing, viewport_w, viewport_h)
 }
 
-fn parse_length(s: &str, containing: f32, viewport_w: f32, viewport_h: f32) -> Option<f32> {
-    let t = s.trim();
+fn parse_length(
+    sn: Option<&StyledNode>,
+    s: &str,
+    containing: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> Option<f32> {
+    if let Some(style_node) = sn {
+        return style_node.resolve_length_px(s, containing, viewport_w, viewport_h);
+    }
 
-    if t == "0" || t == "+0" || t == "-0" {
-        return Some(0.0);
-    }
-    if t.ends_with("px") {
-        return t.trim_end_matches("px").trim().parse::<f32>().ok();
-    }
-    if t.ends_with("vw") {
-        let v: f32 = t.trim_end_matches("vw").trim().parse().ok()?;
-        return Some(viewport_w * (v / layout_constants::PERCENT_DENOMINATOR));
-    }
-    if t.ends_with("vh") {
-        let v: f32 = t.trim_end_matches("vh").trim().parse().ok()?;
-        return Some(viewport_h * (v / layout_constants::PERCENT_DENOMINATOR));
-    }
-    if t.ends_with('%') {
-        let v: f32 = t.trim_end_matches('%').trim().parse().ok()?;
-        return Some(containing * (v / layout_constants::PERCENT_DENOMINATOR));
-    }
-    None
+    crate::style::resolve_css_length(
+        s,
+        containing,
+        viewport_w,
+        viewport_h,
+        layout_constants::DEFAULT_FONT_SIZE_PX,
+        layout_constants::DEFAULT_FONT_SIZE_PX,
+    )
 }
 
 fn parse_4len(
@@ -1812,6 +1825,7 @@ fn scale_for_side(limit: f32, sum: f32) -> f32 {
 }
 
 fn parse_border_radius_shorthand(
+    sn: Option<&StyledNode>,
     s: &str,
     containing: f32,
     viewport_w: f32,
@@ -1829,7 +1843,7 @@ fn parse_border_radius_shorthand(
 
     match parts.len() {
         1 => {
-            let a = parse_length(parts[0], containing, viewport_w, viewport_h)?.max(0.0);
+            let a = parse_length(sn, parts[0], containing, viewport_w, viewport_h)?.max(0.0);
             Some(CornerRadii {
                 top_left: a,
                 top_right: a,
@@ -1838,8 +1852,8 @@ fn parse_border_radius_shorthand(
             })
         }
         2 => {
-            let a = parse_length(parts[0], containing, viewport_w, viewport_h)?.max(0.0);
-            let b = parse_length(parts[1], containing, viewport_w, viewport_h)?.max(0.0);
+            let a = parse_length(sn, parts[0], containing, viewport_w, viewport_h)?.max(0.0);
+            let b = parse_length(sn, parts[1], containing, viewport_w, viewport_h)?.max(0.0);
             Some(CornerRadii {
                 top_left: a,
                 top_right: b,
@@ -1848,9 +1862,9 @@ fn parse_border_radius_shorthand(
             })
         }
         3 => {
-            let a = parse_length(parts[0], containing, viewport_w, viewport_h)?.max(0.0);
-            let b = parse_length(parts[1], containing, viewport_w, viewport_h)?.max(0.0);
-            let c = parse_length(parts[2], containing, viewport_w, viewport_h)?.max(0.0);
+            let a = parse_length(sn, parts[0], containing, viewport_w, viewport_h)?.max(0.0);
+            let b = parse_length(sn, parts[1], containing, viewport_w, viewport_h)?.max(0.0);
+            let c = parse_length(sn, parts[2], containing, viewport_w, viewport_h)?.max(0.0);
             Some(CornerRadii {
                 top_left: a,
                 top_right: b,
@@ -1859,10 +1873,10 @@ fn parse_border_radius_shorthand(
             })
         }
         4 => {
-            let a = parse_length(parts[0], containing, viewport_w, viewport_h)?.max(0.0);
-            let b = parse_length(parts[1], containing, viewport_w, viewport_h)?.max(0.0);
-            let c = parse_length(parts[2], containing, viewport_w, viewport_h)?.max(0.0);
-            let d = parse_length(parts[3], containing, viewport_w, viewport_h)?.max(0.0);
+            let a = parse_length(sn, parts[0], containing, viewport_w, viewport_h)?.max(0.0);
+            let b = parse_length(sn, parts[1], containing, viewport_w, viewport_h)?.max(0.0);
+            let c = parse_length(sn, parts[2], containing, viewport_w, viewport_h)?.max(0.0);
+            let d = parse_length(sn, parts[3], containing, viewport_w, viewport_h)?.max(0.0);
             Some(CornerRadii {
                 top_left: a,
                 top_right: b,
@@ -1874,46 +1888,40 @@ fn parse_border_radius_shorthand(
     }
 }
 
-fn parse_corner_radius(s: &str, containing: f32, viewport_w: f32, viewport_h: f32) -> Option<f32> {
+fn parse_corner_radius(
+    sn: Option<&StyledNode>,
+    s: &str,
+    containing: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> Option<f32> {
     let first = s.split('/').next()?.split_whitespace().next()?;
-    parse_length(first, containing, viewport_w, viewport_h).map(|v| v.max(0.0))
+    parse_length(sn, first, containing, viewport_w, viewport_h).map(|v| v.max(0.0))
 }
 
 fn font_size_px(sn: &crate::style::StyledNode) -> Option<f32> {
-    sn.value("font-size").and_then(|v| parse_px(v))
+    Some(sn.font_size_px())
 }
 
-fn line_height_px(sn: &crate::style::StyledNode, font_size: f32) -> f32 {
-    if let Some(v) = sn.value("line-height") {
-        if let Some(px) = parse_px(v) {
-            return px;
-        }
-        if let Ok(m) = v.trim().parse::<f32>() {
-            return font_size * m;
-        }
-    }
-    font_size * layout_constants::DEFAULT_LINE_HEIGHT_MULTIPLIER
-}
-
-fn parse_px(s: &str) -> Option<f32> {
-    let t = s.trim();
-    if let Some(num) = t.strip_suffix("px") {
-        return num.trim().parse::<f32>().ok();
-    }
-    None
+fn line_height_px(sn: &crate::style::StyledNode, _font_size: f32) -> f32 {
+    sn.line_height_px()
 }
 
 /// ★img の最小 intrinsic size
 /// 優先順位:
-/// 1) CSS width/height (px)
+/// 1) CSS width/height (px/em/rem)
 /// 2) HTML attributes width/height (数値)
 /// 3) fallback default image size
 fn img_intrinsic_size_px(
     sn: &crate::style::StyledNode,
     img_cache: &dyn ImageSizeProvider,
 ) -> (f32, f32) {
-    let css_w = sn.value("width").and_then(|v| parse_px(v));
-    let css_h = sn.value("height").and_then(|v| parse_px(v));
+    let css_w = sn
+        .value("width")
+        .and_then(|v| sn.resolve_length_px(v, 0.0, 0.0, 0.0));
+    let css_h = sn
+        .value("height")
+        .and_then(|v| sn.resolve_length_px(v, 0.0, 0.0, 0.0));
 
     let (attr_w, attr_h, src_opt) = if let crate::dom::NodeType::Element(ed) = &sn.node.node_type {
         let w = ed
@@ -2069,7 +2077,7 @@ fn estimate_layout_box_content_width(
 
     if let Some(width) = sn
         .value("width")
-        .and_then(|value| parse_length(value, containing_width, viewport_w, viewport_h))
+        .and_then(|value| parse_length(Some(sn), value, containing_width, viewport_w, viewport_h))
     {
         return width.max(0.0);
     }
@@ -2178,6 +2186,7 @@ fn horizontal_box_model_width(
     viewport_h: f32,
 ) -> f32 {
     let margin = parse_horizontal_edges(
+        sn,
         sn.value("margin-left").map(|value| value.as_str()),
         sn.value("margin-right").map(|value| value.as_str()),
         sn.value("margin").map(|value| value.as_str()),
@@ -2187,6 +2196,7 @@ fn horizontal_box_model_width(
         true,
     );
     let padding = parse_horizontal_edges(
+        sn,
         sn.value("padding-left").map(|value| value.as_str()),
         sn.value("padding-right").map(|value| value.as_str()),
         sn.value("padding").map(|value| value.as_str()),
@@ -2196,6 +2206,7 @@ fn horizontal_box_model_width(
         false,
     );
     let border = parse_horizontal_edges(
+        sn,
         sn.value("border-left-width").map(|value| value.as_str()),
         sn.value("border-right-width").map(|value| value.as_str()),
         sn.value("border-width").map(|value| value.as_str()),
@@ -2209,6 +2220,7 @@ fn horizontal_box_model_width(
 }
 
 fn parse_horizontal_edges(
+    sn: &StyledNode,
     left: Option<&str>,
     right: Option<&str>,
     shorthand: Option<&str>,
@@ -2221,10 +2233,10 @@ fn parse_horizontal_edges(
     let mut right_px = 0.0;
 
     if let Some(value) = left {
-        left_px = parse_horizontal_edge(value, containing, viewport_w, viewport_h, allow_auto);
+        left_px = parse_horizontal_edge(sn, value, containing, viewport_w, viewport_h, allow_auto);
     }
     if let Some(value) = right {
-        right_px = parse_horizontal_edge(value, containing, viewport_w, viewport_h, allow_auto);
+        right_px = parse_horizontal_edge(sn, value, containing, viewport_w, viewport_h, allow_auto);
     }
 
     if left.is_none() && right.is_none() {
@@ -2232,6 +2244,7 @@ fn parse_horizontal_edges(
             let values = parse_4len(value);
             if let Some(right_value) = values.1.as_deref() {
                 right_px = parse_horizontal_edge(
+                    sn,
                     right_value,
                     containing,
                     viewport_w,
@@ -2241,11 +2254,7 @@ fn parse_horizontal_edges(
             }
             if let Some(left_value) = values.3.as_deref() {
                 left_px = parse_horizontal_edge(
-                    left_value,
-                    containing,
-                    viewport_w,
-                    viewport_h,
-                    allow_auto,
+                    sn, left_value, containing, viewport_w, viewport_h, allow_auto,
                 );
             }
         }
@@ -2255,6 +2264,7 @@ fn parse_horizontal_edges(
 }
 
 fn parse_horizontal_edge(
+    sn: &StyledNode,
     value: &str,
     containing: f32,
     viewport_w: f32,
@@ -2265,7 +2275,7 @@ fn parse_horizontal_edge(
         return 0.0;
     }
 
-    parse_length(value, containing, viewport_w, viewport_h).unwrap_or(0.0)
+    parse_length(Some(sn), value, containing, viewport_w, viewport_h).unwrap_or(0.0)
 }
 
 fn measure_collapsed_text_width(font: &Font, text: &str, font_size: f32) -> f32 {
@@ -2981,6 +2991,55 @@ mod tests {
         assert!((first.dimensions.content.x - second.dimensions.content.x).abs() <= 0.5);
         assert!(second.dimensions.content.y > first.dimensions.content.y + 0.5);
         assert!(tag.dimensions.content.width >= first.dimensions.margin_box_width());
+    }
+
+    #[test]
+    fn em_and_rem_lengths_resolve_from_computed_font_sizes() {
+        let styled = styled_tree_with_css(
+            r#"
+            <div id="outer">
+                <div id="em-box"></div>
+                <div id="rem-box"></div>
+            </div>
+            "#,
+            r#"
+            html { font-size: 20px; }
+            #outer {
+                display: block;
+                font-size: 1.5em;
+                margin: 0;
+                padding: 0;
+            }
+            #em-box {
+                display: block;
+                width: 2em;
+                height: 1em;
+                margin: 0;
+                padding: 0;
+            }
+            #rem-box {
+                display: block;
+                width: 2rem;
+                height: 1rem;
+                margin: 0;
+                padding: 0;
+            }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 400.0;
+        viewport.content.height = 200.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let em_box = find_element_by_id(&layout, "em-box").unwrap();
+        let rem_box = find_element_by_id(&layout, "rem-box").unwrap();
+
+        assert!((em_box.dimensions.content.width - 60.0).abs() <= 0.5);
+        assert!((em_box.dimensions.content.height - 30.0).abs() <= 0.5);
+        assert!((rem_box.dimensions.content.width - 40.0).abs() <= 0.5);
+        assert!((rem_box.dimensions.content.height - 20.0).abs() <= 0.5);
     }
 
     #[test]

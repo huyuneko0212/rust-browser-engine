@@ -1,0 +1,197 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>em rem layout test</title>
+  <style>
+    html {
+      font-size: 20px;
+      background: #f4f1ea;
+      color: #1f252d;
+    }
+
+    body {
+      margin: 0;
+      padding: 24px;
+      line-height: 1.4;
+      background: linear-gradient(180deg, #f7f4ee 0%, #ece6db 100%);
+    }
+
+    h1 {
+      margin: 0 0 12px 0;
+      font-size: 1.8rem;
+    }
+
+    h2 {
+      margin: 0 0 0.75rem 0;
+      font-size: 1.2rem;
+    }
+
+    p {
+      margin: 0.5rem 0;
+    }
+
+    .page {
+      max-width: 44rem;
+      margin: 0 auto;
+    }
+
+    .section {
+      margin: 0 0 1.25rem 0;
+      padding: 1rem;
+      background: #fffdf9;
+      border: 0.12rem solid #d5c9b8;
+      border-radius: 0.8rem;
+    }
+
+    .hint {
+      color: #5a6470;
+      font-size: 0.8rem;
+    }
+
+    .sample-row {
+      margin-top: 0.75rem;
+    }
+
+    .em-parent {
+      font-size: 1.5em;
+      padding: 0.75em;
+      background: #fff0c9;
+      border: 0.2em solid #d79b00;
+      border-radius: 0.8em;
+    }
+
+    .em-child {
+      margin-top: 0.75em;
+      padding: 0.5em;
+      background: #fff9e8;
+      border: 0.15em solid #9f7a00;
+      border-radius: 0.6em;
+      font-size: 2em;
+      line-height: 1.1;
+    }
+
+    .rem-card {
+      width: 12rem;
+      height: 4rem;
+      padding: 1rem;
+      background: #d9ecff;
+      border: 0.25rem solid #3973ac;
+      border-radius: 1rem;
+    }
+
+    .em-card-wrap {
+      font-size: 1.5em;
+    }
+
+    .em-card {
+      width: 8em;
+      height: 3em;
+      padding: 1em;
+      background: #dff7e5;
+      border: 0.25em solid #2d6a4f;
+      border-radius: 1em;
+    }
+
+    .position-anchor {
+      position: relative;
+      height: 10rem;
+      padding: 1rem;
+      background: #fff3e6;
+      border: 0.15rem solid #d27b2c;
+      border-radius: 0.8rem;
+    }
+
+    .position-anchor .chip {
+      position: absolute;
+      top: 1rem;
+      right: 1.5rem;
+      width: 7rem;
+      height: 2rem;
+      padding: 0.4rem 0.6rem;
+      background: #2f4858;
+      color: #ffffff;
+      border-radius: 0.6rem;
+    }
+
+    .position-anchor .note {
+      position: absolute;
+      left: 2em;
+      bottom: 1em;
+      width: 10em;
+      padding: 0.8em;
+      background: #fbd7d7;
+      border: 0.15em solid #a63d40;
+      border-radius: 0.8em;
+      font-size: 1.25em;
+    }
+
+    .image-demo {
+      font-size: 1.25em;
+    }
+
+    .image-demo img {
+      width: 6rem;
+      height: 3rem;
+      border: 0.2rem solid #444444;
+      border-radius: 0.5rem;
+      background: #ffffff;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>em/rem test page</h1>
+    <p class="hint">
+      Root font-size is 20px. This page is meant for visual checks after adding em/rem support.
+    </p>
+
+    <div class="section">
+      <h2>font-size inheritance</h2>
+      <p>Expected sizes: body text = 20px, yellow box = 30px, inner box = 60px.</p>
+      <div class="sample-row em-parent">
+        Parent uses <code>font-size: 1.5em</code>.
+        <div class="em-child">
+          Child uses <code>font-size: 2em</code> and <code>line-height: 1.1</code>.
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>box sizes with rem</h2>
+      <p>Expected outer size is based only on the root size. Width 12rem = 240px.</p>
+      <div class="sample-row rem-card">
+        rem card
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>box sizes with em</h2>
+      <p>Wrapper font-size is 1.5em, so card width 8em should become 240px.</p>
+      <div class="sample-row em-card-wrap">
+        <div class="em-card">
+          em card
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>position offsets</h2>
+      <p>Chip uses rem offsets. Red note uses em offsets from its own font-size.</p>
+      <div class="sample-row position-anchor">
+        positioned container
+        <div class="chip">1rem / 1.5rem</div>
+        <div class="note">2em from left, 1em from bottom</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>image sizing</h2>
+      <p>Image below uses <code>width: 6rem</code> and <code>height: 3rem</code>.</p>
+      <div class="sample-row image-demo">
+        <img src="150x150.png" alt="scaled image">
+      </div>
+    </div>
+  </div>
+</body>
+</html>

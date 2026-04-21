@@ -1126,6 +1126,33 @@ mod tests {
 
         assert!(red_index < blue_index);
     }
+
+    #[test]
+    fn text_uses_computed_font_sizes_for_em_and_rem() {
+        let items = display_list_for(
+            r#"
+            <p id="em-text">hello</p>
+            <p id="rem-text">world</p>
+            "#,
+            r#"
+            html { font-size: 20px; }
+            #em-text { font-size: 1.5em; }
+            #rem-text { font-size: 0.5rem; }
+            "#,
+        );
+
+        let hello_size = items.iter().find_map(|item| match item {
+            DisplayItem::Text(text) if text.text == "hello" => Some(text.size_px),
+            _ => None,
+        });
+        let world_size = items.iter().find_map(|item| match item {
+            DisplayItem::Text(text) if text.text == "world" => Some(text.size_px),
+            _ => None,
+        });
+
+        assert_eq!(hello_size, Some(30.0));
+        assert_eq!(world_size, Some(10.0));
+    }
 }
 
 // ---------------------------
@@ -1133,25 +1160,11 @@ mod tests {
 // ---------------------------
 
 fn font_size_px(sn: &crate::style::StyledNode) -> Option<f32> {
-    sn.value("font-size").and_then(parse_px)
+    Some(sn.font_size_px())
 }
 
-fn line_height_px(sn: &crate::style::StyledNode, font_size: f32) -> f32 {
-    if let Some(v) = sn.value("line-height") {
-        if let Some(px) = parse_px(v) {
-            return px;
-        }
-        if let Ok(m) = v.trim().parse::<f32>() {
-            return font_size * m;
-        }
-    }
-    font_size * layout_constants::DEFAULT_LINE_HEIGHT_MULTIPLIER
-}
-
-/// &String / &str どっちでも受けられるように
-fn parse_px(s: impl AsRef<str>) -> Option<f32> {
-    let t = s.as_ref().trim();
-    t.strip_suffix("px")?.trim().parse::<f32>().ok()
+fn line_height_px(sn: &crate::style::StyledNode, _font_size: f32) -> f32 {
+    sn.line_height_px()
 }
 
 fn text_decoration_none(sn: &crate::style::StyledNode) -> bool {

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::constants::color;
+use crate::constants::{color, layout as layout_constants};
 use crate::css::{Declaration, Rule, Stylesheet, parse_inline_declarations};
 use crate::dom::{ElementData, Node, NodeType};
 
@@ -10,6 +10,8 @@ use crate::dom::{ElementData, Node, NodeType};
 pub struct StyledNode {
     pub node: Node,
     pub specified_values: HashMap<String, String>,
+    pub computed_font_size_px: f32,
+    pub computed_root_font_size_px: f32,
     pub children: Vec<StyledNode>,
     pub link_href: Option<String>,
     pub link_id: Option<usize>,
@@ -85,6 +87,45 @@ impl ZIndex {
 impl StyledNode {
     pub fn value(&self, name: &str) -> Option<&String> {
         self.specified_values.get(name)
+    }
+
+    pub fn font_size_px(&self) -> f32 {
+        self.computed_font_size_px
+    }
+
+    pub fn root_font_size_px(&self) -> f32 {
+        self.computed_root_font_size_px
+    }
+
+    pub fn resolve_length_px(
+        &self,
+        value: &str,
+        containing: f32,
+        viewport_w: f32,
+        viewport_h: f32,
+    ) -> Option<f32> {
+        resolve_css_length(
+            value,
+            containing,
+            viewport_w,
+            viewport_h,
+            self.computed_font_size_px,
+            self.computed_root_font_size_px,
+        )
+    }
+
+    pub fn line_height_px(&self) -> f32 {
+        self.value("line-height")
+            .and_then(|value| {
+                resolve_line_height_value(
+                    value,
+                    self.computed_font_size_px,
+                    self.computed_root_font_size_px,
+                )
+            })
+            .unwrap_or(
+                self.computed_font_size_px * layout_constants::DEFAULT_LINE_HEIGHT_MULTIPLIER,
+            )
     }
 
     /// display の最小実装（IFC向け）
@@ -277,10 +318,41 @@ fn inherit_only(values: &HashMap<String, String>) -> HashMap<String, String> {
     out
 }
 
+fn inherited_values_for_children(
+    values: &HashMap<String, String>,
+    font_size_px: f32,
+    root_font_size_px: f32,
+) -> HashMap<String, String> {
+    let mut out = inherit_only(values);
+
+    out.insert("font-size".to_string(), format_css_px(font_size_px));
+
+    if let Some(line_height) = values.get("line-height") {
+        if is_unitless_number(line_height) {
+            out.insert("line-height".to_string(), line_height.clone());
+        } else if let Some(px) =
+            resolve_line_height_value(line_height, font_size_px, root_font_size_px)
+        {
+            out.insert("line-height".to_string(), format_css_px(px));
+        }
+    }
+
+    out
+}
+
+fn format_css_px(value: f32) -> String {
+    format!("{value}px")
+}
+
+fn is_unitless_number(value: &str) -> bool {
+    value.trim().parse::<f32>().is_ok()
+}
+
 // =========================================================
 
 pub fn style_tree(root: Node, stylesheet: &Stylesheet) -> StyledNode {
     let mut next_link_id = 1usize;
+    let initial_font_size_px = layout_constants::DEFAULT_FONT_SIZE_PX;
     style_tree_with_ctx(
         root,
         stylesheet,
@@ -288,6 +360,8 @@ pub fn style_tree(root: Node, stylesheet: &Stylesheet) -> StyledNode {
         None,
         &Vec::new(),
         &HashMap::new(),
+        initial_font_size_px,
+        initial_font_size_px,
         &mut next_link_id,
     )
 }
@@ -299,21 +373,41 @@ fn style_tree_with_ctx(
     inherited_link_id: Option<usize>,
     ancestors: &Vec<Ancestor>,
     inherited_values: &HashMap<String, String>,
+    inherited_font_size_px: f32,
+    root_font_size_px: f32,
     next_link_id: &mut usize,
 ) -> StyledNode {
     // まず継承値をベースにする（Textにも効く）
     let mut specified_values = inherited_values.clone();
+    let mut own_values = HashMap::new();
 
     // Elementなら、自分に当たるCSSで上書き
     if let NodeType::Element(ref e) = root.node_type {
-        let own = specified_values_for(e, stylesheet, ancestors);
-        for (k, v) in own {
-            specified_values.insert(k, v);
-        }
-
+        own_values = specified_values_for(e, stylesheet, ancestors);
         for declaration in parse_inline_style_attr(e) {
-            specified_values.insert(declaration.name, declaration.value);
+            own_values.insert(declaration.name, declaration.value);
         }
+    }
+
+    let root_font_size_reference_px = if ancestors.is_empty() {
+        layout_constants::DEFAULT_FONT_SIZE_PX
+    } else {
+        root_font_size_px
+    };
+    let computed_font_size_px = own_values
+        .get("font-size")
+        .and_then(|value| {
+            resolve_font_size_value(value, inherited_font_size_px, root_font_size_reference_px)
+        })
+        .unwrap_or(inherited_font_size_px);
+    let computed_root_font_size_px = if ancestors.is_empty() {
+        computed_font_size_px
+    } else {
+        root_font_size_px
+    };
+
+    for (k, v) in own_values {
+        specified_values.insert(k, v);
     }
 
     // link 継承（a の href を子孫テキストへ渡す）
@@ -343,7 +437,11 @@ fn style_tree_with_ctx(
     }
 
     // ★ 子へ渡す継承値（継承プロパティだけ）
-    let next_inherited_values = inherit_only(&specified_values);
+    let next_inherited_values = inherited_values_for_children(
+        &specified_values,
+        computed_font_size_px,
+        computed_root_font_size_px,
+    );
 
     let children = root
         .children
@@ -357,6 +455,8 @@ fn style_tree_with_ctx(
                 link_id_here,
                 &next_ancestors,
                 &next_inherited_values,
+                computed_font_size_px,
+                computed_root_font_size_px,
                 next_link_id,
             )
         })
@@ -365,6 +465,8 @@ fn style_tree_with_ctx(
     StyledNode {
         node: root,
         specified_values,
+        computed_font_size_px,
+        computed_root_font_size_px,
         children,
         link_href: link_here,
         link_id: link_id_here,
@@ -653,6 +755,74 @@ fn specificity_of_simple(s: &str) -> Specificity {
 
 // ---------------- color ----------------
 
+pub fn resolve_css_length(
+    value: &str,
+    containing: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+    font_size_px: f32,
+    root_font_size_px: f32,
+) -> Option<f32> {
+    let t = value.trim();
+
+    if t == "0" || t == "+0" || t == "-0" {
+        return Some(0.0);
+    }
+    if let Some(num) = t.strip_suffix("px") {
+        return num.trim().parse::<f32>().ok();
+    }
+    if let Some(num) = t.strip_suffix("rem") {
+        let v = num.trim().parse::<f32>().ok()?;
+        return Some(root_font_size_px * v);
+    }
+    if let Some(num) = t.strip_suffix("em") {
+        let v = num.trim().parse::<f32>().ok()?;
+        return Some(font_size_px * v);
+    }
+    if let Some(num) = t.strip_suffix("vw") {
+        let v = num.trim().parse::<f32>().ok()?;
+        return Some(viewport_w * (v / layout_constants::PERCENT_DENOMINATOR));
+    }
+    if let Some(num) = t.strip_suffix("vh") {
+        let v = num.trim().parse::<f32>().ok()?;
+        return Some(viewport_h * (v / layout_constants::PERCENT_DENOMINATOR));
+    }
+    if let Some(num) = t.strip_suffix('%') {
+        let v = num.trim().parse::<f32>().ok()?;
+        return Some(containing * (v / layout_constants::PERCENT_DENOMINATOR));
+    }
+
+    None
+}
+
+fn resolve_font_size_value(
+    value: &str,
+    parent_font_size_px: f32,
+    root_font_size_px: f32,
+) -> Option<f32> {
+    resolve_css_length(
+        value,
+        parent_font_size_px,
+        0.0,
+        0.0,
+        parent_font_size_px,
+        root_font_size_px,
+    )
+}
+
+fn resolve_line_height_value(
+    value: &str,
+    font_size_px: f32,
+    root_font_size_px: f32,
+) -> Option<f32> {
+    let t = value.trim();
+    if let Ok(multiplier) = t.parse::<f32>() {
+        return Some(font_size_px * multiplier);
+    }
+
+    resolve_css_length(t, font_size_px, 0.0, 0.0, font_size_px, root_font_size_px)
+}
+
 fn parse_color(s: &str) -> Option<[f32; 4]> {
     let t = s.trim().to_lowercase();
 
@@ -889,5 +1059,40 @@ mod tests {
         let target = find_element_by_id(&styled, "target").expect("target span should exist");
 
         assert_eq!(target.display(), Display::InlineBlock);
+    }
+
+    #[test]
+    fn computed_font_sizes_resolve_em_and_rem() {
+        let dom = crate::html::parse(
+            r#"
+            <div id="outer">
+                <span id="inner">inner</span>
+                <span id="root-sized">root</span>
+            </div>
+            "#
+            .to_string(),
+        );
+        let stylesheet = crate::css::Parser::new(
+            r#"
+            html { font-size: 20px; }
+            #outer { font-size: 1.5em; }
+            #inner { font-size: 2em; }
+            #root-sized { font-size: 0.5rem; }
+            "#
+            .to_string(),
+        )
+        .parse_stylesheet();
+
+        let styled = style_tree(dom, &stylesheet);
+        let outer = find_element_by_id(&styled, "outer").expect("outer should exist");
+        let inner = find_element_by_id(&styled, "inner").expect("inner should exist");
+        let root_sized =
+            find_element_by_id(&styled, "root-sized").expect("root-sized should exist");
+
+        assert!((outer.font_size_px() - 30.0).abs() <= 0.01);
+        assert!((inner.font_size_px() - 60.0).abs() <= 0.01);
+        assert!((root_sized.font_size_px() - 10.0).abs() <= 0.01);
+        assert!((inner.root_font_size_px() - 20.0).abs() <= 0.01);
+        assert!((root_sized.root_font_size_px() - 20.0).abs() <= 0.01);
     }
 }
