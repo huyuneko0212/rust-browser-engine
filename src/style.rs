@@ -230,7 +230,7 @@ fn is_block_element(tag: &str) -> bool {
 }
 
 // =========================================================
-// descendant selector のための祖先情報
+// descendant / child selector のための祖先情報
 // =========================================================
 
 #[derive(Debug, Clone)]
@@ -374,6 +374,18 @@ fn style_tree_with_ctx(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Specificity(u32, u32, u32); // (id, class, tag)
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectorCombinator {
+    Descendant,
+    Child,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SelectorPart<'a> {
+    simple: &'a str,
+    combinator_to_left: Option<SelectorCombinator>,
+}
+
 fn specified_values_for(
     elem: &ElementData,
     stylesheet: &Stylesheet,
@@ -417,32 +429,116 @@ fn matching_rule_specificity(
         .max()
 }
 
-fn selector_matches_descendant(elem: &ElementData, ancestors: &[Ancestor], selector: &str) -> bool {
+fn parse_selector_parts(selector: &str) -> Option<Vec<SelectorPart<'_>>> {
     let s = selector.trim();
     if s.is_empty() {
-        return false;
+        return None;
     }
 
-    // まだ未対応
-    if s.contains('>') || s.contains('+') || s.contains('[') || s.contains(':') {
-        return false;
-    }
+    let mut parts = Vec::new();
+    let mut pos = 0usize;
+    let mut pending_combinator: Option<SelectorCombinator> = None;
 
-    let parts: Vec<&str> = s.split_whitespace().filter(|p| !p.is_empty()).collect();
-    if parts.is_empty() {
-        return false;
-    }
+    while pos < s.len() {
+        while pos < s.len() {
+            let ch = s[pos..].chars().next().unwrap();
+            if !ch.is_whitespace() {
+                break;
+            }
+            pos += ch.len_utf8();
+        }
 
-    if !selector_matches_simple_elem(elem, parts[parts.len() - 1]) {
-        return false;
-    }
+        if pos >= s.len() {
+            break;
+        }
 
-    let mut upto = ancestors.len();
-    for part in parts[..parts.len() - 1].iter().rev() {
-        if let Some(pos) = find_ancestor_match(ancestors, upto, part) {
-            upto = pos;
+        if s[pos..].starts_with('>') {
+            if parts.is_empty() || pending_combinator.is_some() {
+                return None;
+            }
+            pending_combinator = Some(SelectorCombinator::Child);
+            pos += '>'.len_utf8();
+            continue;
+        }
+
+        let start = pos;
+        while pos < s.len() {
+            let ch = s[pos..].chars().next().unwrap();
+            if ch.is_whitespace() || ch == '>' {
+                break;
+            }
+            if matches!(ch, '+' | '[' | ':' | '~') {
+                return None;
+            }
+            pos += ch.len_utf8();
+        }
+
+        let simple = s[start..pos].trim();
+        if simple.is_empty() {
+            return None;
+        }
+
+        let combinator_to_left = if parts.is_empty() {
+            None
         } else {
+            Some(
+                pending_combinator
+                    .take()
+                    .unwrap_or(SelectorCombinator::Descendant),
+            )
+        };
+        parts.push(SelectorPart {
+            simple,
+            combinator_to_left,
+        });
+    }
+
+    if pending_combinator.is_some() {
+        return None;
+    }
+
+    Some(parts)
+}
+
+fn selector_matches_parts(
+    elem: &ElementData,
+    ancestors: &[Ancestor],
+    parts: &[SelectorPart<'_>],
+) -> bool {
+    let Some(last) = parts.last() else {
+        return false;
+    };
+
+    if !selector_matches_simple_elem(elem, last.simple) {
+        return false;
+    }
+
+    let mut current_ancestor_index = ancestors.len();
+    for i in (1..parts.len()).rev() {
+        let Some(combinator) = parts[i].combinator_to_left else {
             return false;
+        };
+
+        let left = parts[i - 1].simple;
+        match combinator {
+            SelectorCombinator::Descendant => {
+                if let Some(pos) = find_ancestor_match(ancestors, current_ancestor_index, left) {
+                    current_ancestor_index = pos;
+                } else {
+                    return false;
+                }
+            }
+            SelectorCombinator::Child => {
+                if current_ancestor_index == 0 {
+                    return false;
+                }
+
+                let parent_index = current_ancestor_index - 1;
+                if !selector_matches_simple_ancestor(&ancestors[parent_index], left) {
+                    return false;
+                }
+                current_ancestor_index = parent_index;
+            }
         }
     }
 
@@ -517,18 +613,17 @@ fn selector_specificity_if_matches(
     ancestors: &[Ancestor],
     selector: &str,
 ) -> Option<Specificity> {
-    if !selector_matches_descendant(elem, ancestors, selector) {
+    let parts = parse_selector_parts(selector)?;
+    if !selector_matches_parts(elem, ancestors, &parts) {
         return None;
     }
-
-    let parts: Vec<&str> = selector.trim().split_whitespace().collect();
 
     let mut id = 0u32;
     let mut class = 0u32;
     let mut tag = 0u32;
 
-    for p in parts {
-        let sp = specificity_of_simple(p);
+    for part in parts {
+        let sp = specificity_of_simple(part.simple);
         id += sp.0;
         class += sp.1;
         tag += sp.2;
@@ -715,5 +810,69 @@ mod tests {
     #[test]
     fn named_yellow_color_is_supported() {
         assert_eq!(parse_color("yellow"), Some([1.0, 1.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn child_selector_matches_only_direct_children() {
+        let dom = crate::html::parse(
+            r#"
+            <main>
+                <p id="direct">direct child</p>
+                <section>
+                    <p id="nested">nested child</p>
+                </section>
+            </main>
+            "#
+            .to_string(),
+        );
+        let stylesheet =
+            crate::css::Parser::new(r#"main>p { color: red; }"#.to_string()).parse_stylesheet();
+
+        let styled = style_tree(dom, &stylesheet);
+        let direct = find_element_by_id(&styled, "direct").expect("direct paragraph should exist");
+        let nested = find_element_by_id(&styled, "nested").expect("nested paragraph should exist");
+
+        assert_eq!(
+            direct.value("color").map(|value| value.as_str()),
+            Some("red")
+        );
+        assert_eq!(nested.value("color").map(|value| value.as_str()), None);
+    }
+
+    #[test]
+    fn child_selector_can_mix_with_descendant_selector() {
+        let dom = crate::html::parse(
+            r#"
+            <section>
+                <div>
+                    <main>
+                        <article>
+                            <p id="target" class="note">hit</p>
+                        </article>
+                        <article>
+                            <div>
+                                <p id="nested" class="note">miss</p>
+                            </div>
+                        </article>
+                    </main>
+                </div>
+            </section>
+            "#
+            .to_string(),
+        );
+        let stylesheet = crate::css::Parser::new(
+            r#"section main > article > p.note { color: blue; }"#.to_string(),
+        )
+        .parse_stylesheet();
+
+        let styled = style_tree(dom, &stylesheet);
+        let target = find_element_by_id(&styled, "target").expect("target paragraph should exist");
+        let nested = find_element_by_id(&styled, "nested").expect("nested paragraph should exist");
+
+        assert_eq!(
+            target.value("color").map(|value| value.as_str()),
+            Some("blue")
+        );
+        assert_eq!(nested.value("color").map(|value| value.as_str()), None);
     }
 }
