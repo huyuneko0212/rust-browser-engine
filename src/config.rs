@@ -150,11 +150,8 @@ mod tests {
 
     #[test]
     fn uses_system_font_when_font_path_is_not_set() {
-        let config = parse_config_text(
-            "# use OS default font",
-            Path::new("project/browser.conf"),
-        )
-        .unwrap();
+        let config =
+            parse_config_text("# use OS default font", Path::new("project/browser.conf")).unwrap();
 
         assert_eq!(config.font_path, None);
     }

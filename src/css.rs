@@ -28,6 +28,14 @@ pub struct Parser {
     input: String,
 }
 
+pub fn parse_inline_declarations(input: &str) -> Vec<Declaration> {
+    let mut parser = Parser::new(format!("inline {{{}}}", input));
+    parser
+        .parse_rule()
+        .map(|rule| rule.declarations)
+        .unwrap_or_default()
+}
+
 impl Parser {
     pub fn new(input: String) -> Self {
         Self { pos: 0, input }
@@ -391,5 +399,26 @@ impl Parser {
         }
 
         decls
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inline_style_declarations_expand_border_shorthand() {
+        let declarations =
+            parse_inline_declarations("background: #cfe; border: 2px solid #c96b00;");
+
+        assert!(declarations.iter().any(|declaration| {
+            declaration.name == "background" && declaration.value == "#cfe"
+        }));
+        assert!(declarations.iter().any(|declaration| {
+            declaration.name == "border-width" && declaration.value == "2px"
+        }));
+        assert!(declarations.iter().any(|declaration| {
+            declaration.name == "border-color" && declaration.value == "#c96b00"
+        }));
     }
 }

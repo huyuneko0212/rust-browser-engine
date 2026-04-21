@@ -1,5 +1,5 @@
-mod constants;
 mod config;
+mod constants;
 mod css;
 mod dom;
 mod font;

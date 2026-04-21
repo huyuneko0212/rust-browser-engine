@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::constants::color;
-use crate::css::{Declaration, Rule, Stylesheet};
+use crate::css::{Declaration, Rule, Stylesheet, parse_inline_declarations};
 use crate::dom::{ElementData, Node, NodeType};
 
 #[derive(Debug, Clone)]
@@ -308,6 +308,10 @@ fn style_tree_with_ctx(
         for (k, v) in own {
             specified_values.insert(k, v);
         }
+
+        for declaration in parse_inline_style_attr(e) {
+            specified_values.insert(declaration.name, declaration.value);
+        }
     }
 
     // link 継承（a の href を子孫テキストへ渡す）
@@ -393,6 +397,13 @@ fn specified_values_for(
     }
 
     values
+}
+
+fn parse_inline_style_attr(elem: &ElementData) -> Vec<Declaration> {
+    elem.attributes
+        .get("style")
+        .map(|style| parse_inline_declarations(style))
+        .unwrap_or_default()
 }
 
 fn matching_rule_specificity(
@@ -599,6 +610,7 @@ fn parse_color(s: &str) -> Option<[f32; 4]> {
         "red" => Some(color::RED),
         "green" => Some(color::GREEN),
         "blue" => Some(color::BLUE),
+        "yellow" => Some([1.0, 1.0, 0.0, 1.0]),
         _ => None,
     }
 }
@@ -626,6 +638,19 @@ fn parse_alpha(s: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn find_element_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
+        if matches!(
+            &node.node.node_type,
+            NodeType::Element(element) if element.id() == Some(id)
+        ) {
+            return Some(node);
+        }
+
+        node.children
+            .iter()
+            .find_map(|child| find_element_by_id(child, id))
+    }
 
     #[test]
     fn rgba_alpha_uses_css_alpha_range() {
@@ -657,5 +682,38 @@ mod tests {
             assert!(is_inheritable_prop(prop));
         }
         assert!(!is_inheritable_prop("background"));
+    }
+
+    #[test]
+    fn inline_style_attribute_overrides_stylesheet_values() {
+        let dom = crate::html::parse(
+            r#"<p><span id="target" style="background: #cfe; border: 2px solid red;">hello</span></p>"#
+                .to_string(),
+        );
+        let stylesheet = crate::css::Parser::new(
+            r#"#target { background: blue; border: 1px solid green; }"#.to_string(),
+        )
+        .parse_stylesheet();
+
+        let styled = style_tree(dom, &stylesheet);
+        let span = find_element_by_id(&styled, "target").expect("target span should exist");
+
+        assert_eq!(
+            span.value("background").map(|value| value.as_str()),
+            Some("#cfe")
+        );
+        assert_eq!(
+            span.value("border-width").map(|value| value.as_str()),
+            Some("2px")
+        );
+        assert_eq!(
+            span.value("border-color").map(|value| value.as_str()),
+            Some("red")
+        );
+    }
+
+    #[test]
+    fn named_yellow_color_is_supported() {
+        assert_eq!(parse_color("yellow"), Some([1.0, 1.0, 0.0, 1.0]));
     }
 }

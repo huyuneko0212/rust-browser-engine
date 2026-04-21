@@ -110,40 +110,8 @@ fn paint_node_contents(
     base_url: &crate::url::URL,
     fixed: bool,
 ) {
-    // --------------------------------------------------------
-    // inline element の background を padding込みで塗る
-    // （inline border は未対応なので背景だけ）
-    // --------------------------------------------------------
     if matches!(node.box_type, BoxType::InlineNode(_)) {
-        if let Some(sn) = node.get_style_node() {
-            if matches!(sn.node.node_type, crate::dom::NodeType::Element(_)) {
-                if let Some(bg) = sn.background_color() {
-                    if let Some(mut bounds) = collect_descendant_text_bounds(node) {
-                        let (pt, pr, pb, pl) = padding_trbl(sn);
-
-                        bounds.x -= pl;
-                        bounds.y -= pt;
-                        bounds.width += pl + pr;
-                        bounds.height += pt + pb;
-
-                        if bounds.width > 0.0 && bounds.height > 0.0 {
-                            out.push(DisplayItem::Rect(DrawRect {
-                                x: bounds.x,
-                                y: bounds.y,
-                                w: bounds.width,
-                                h: bounds.height,
-                                radius: CornerRadii::default(),
-                                color: bg,
-                                base_color: bg,
-                                href: None,
-                                link_id: None,
-                                fixed,
-                            }));
-                        }
-                    }
-                }
-            }
-        }
+        paint_inline_element_fragments(node, out, fixed);
     }
 
     // --------------------------------------------------------
@@ -813,6 +781,20 @@ mod tests {
             .expect("colored rect should be painted")
     }
 
+    fn rect_count(items: &[DisplayItem], color: [f32; 4]) -> usize {
+        items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Rect(rect) if rect.color == color))
+            .count()
+    }
+
+    fn border_count(items: &[DisplayItem], color: [f32; 4]) -> usize {
+        items
+            .iter()
+            .filter(|item| matches!(item, DisplayItem::Border(border) if border.color == color))
+            .count()
+    }
+
     #[test]
     fn joins_same_link_underlines_on_same_line() {
         let mut items = vec![
@@ -843,6 +825,28 @@ mod tests {
         merge_adjacent_link_underlines(&mut items);
 
         assert_eq!(items.len(), 3);
+    }
+
+    #[test]
+    fn wrapped_inline_element_paints_background_and_border_per_fragment() {
+        let items = display_list_for(
+            r#"<p><span id="target">alpha beta gamma delta epsilon</span></p>"#,
+            r#"
+            p { display: block; width: 90px; margin: 0; padding: 0; }
+            #target {
+                background: #ffff00;
+                padding: 4px;
+                border: 2px solid red;
+            }
+            "#,
+        );
+
+        let yellow = [1.0, 1.0, 0.0, 1.0];
+        let background_count = rect_count(&items, yellow);
+        let border_count = border_count(&items, color::RED);
+
+        assert!(background_count >= 2);
+        assert_eq!(background_count, border_count);
     }
 
     #[test]
@@ -1147,125 +1151,93 @@ fn collapse_whitespace(s: &str) -> String {
     out
 }
 
-// --------------------------------------------------------
-// inline背景のための helper
-// --------------------------------------------------------
+fn paint_inline_element_fragments(node: &LayoutBox<'_>, out: &mut Vec<DisplayItem>, fixed: bool) {
+    let Some(sn) = node.get_style_node() else {
+        return;
+    };
 
-fn collect_descendant_text_bounds(node: &LayoutBox<'_>) -> Option<crate::layout::Rect> {
-    let mut min_x = f32::INFINITY;
-    let mut min_y = f32::INFINITY;
-    let mut max_x = f32::NEG_INFINITY;
-    let mut max_y = f32::NEG_INFINITY;
+    if !matches!(sn.node.node_type, crate::dom::NodeType::Element(_)) {
+        return;
+    }
 
-    let mut any = false;
-    collect_descendant_text_bounds_rec(
-        node, &mut min_x, &mut min_y, &mut max_x, &mut max_y, &mut any,
-    );
+    let bg = sn.background_color();
+    let border_width = node
+        .dimensions
+        .border
+        .left
+        .max(node.dimensions.border.right)
+        .max(node.dimensions.border.top)
+        .max(node.dimensions.border.bottom);
 
-    any.then(|| crate::layout::Rect {
-        x: min_x,
-        y: min_y,
-        width: (max_x - min_x).max(0.0),
-        height: (max_y - min_y).max(0.0),
-    })
+    if bg.is_none() && border_width <= 0.0 {
+        return;
+    }
+
+    let border_color = if border_width > 0.0 {
+        Some(sn.border_color().unwrap_or(color::BLACK))
+    } else {
+        None
+    };
+
+    for fragment in &node.paint_fragments {
+        let border_box = inline_fragment_border_box(&fragment.rect, &node.dimensions);
+        if border_box.width <= 0.0 || border_box.height <= 0.0 {
+            continue;
+        }
+
+        let radius = node
+            .dimensions
+            .border_radius
+            .normalize(border_box.width, border_box.height);
+
+        if let Some(bg) = bg {
+            out.push(DisplayItem::Rect(DrawRect {
+                x: border_box.x,
+                y: border_box.y,
+                w: border_box.width,
+                h: border_box.height,
+                radius,
+                color: bg,
+                base_color: bg,
+                href: None,
+                link_id: None,
+                fixed,
+            }));
+        }
+
+        if let Some(border_color) = border_color {
+            out.push(DisplayItem::Border(DrawBorder {
+                x: border_box.x,
+                y: border_box.y,
+                w: border_box.width,
+                h: border_box.height,
+                radius,
+                border_width,
+                color: border_color,
+                href: None,
+                fixed,
+            }));
+        }
+    }
 }
 
-fn collect_descendant_text_bounds_rec(
-    node: &LayoutBox<'_>,
-    min_x: &mut f32,
-    min_y: &mut f32,
-    max_x: &mut f32,
-    max_y: &mut f32,
-    any: &mut bool,
-) {
-    for ch in &node.children {
-        if let Some(sn) = ch.get_style_node() {
-            if matches!(sn.node.node_type, crate::dom::NodeType::Text(_)) {
-                if ch.text_fragments.is_empty() {
-                    let c = &ch.dimensions.content;
-                    if c.width > 0.0 && c.height > 0.0 {
-                        *min_x = (*min_x).min(c.x);
-                        *min_y = (*min_y).min(c.y);
-                        *max_x = (*max_x).max(c.x + c.width);
-                        *max_y = (*max_y).max(c.y + c.height);
-                        *any = true;
-                    }
-                } else {
-                    for frag in &ch.text_fragments {
-                        let c = &frag.rect;
-                        if c.width > 0.0 && c.height > 0.0 {
-                            *min_x = (*min_x).min(c.x);
-                            *min_y = (*min_y).min(c.y);
-                            *max_x = (*max_x).max(c.x + c.width);
-                            *max_y = (*max_y).max(c.y + c.height);
-                            *any = true;
-                        }
-                    }
-                }
-            }
-        }
-        collect_descendant_text_bounds_rec(ch, min_x, min_y, max_x, max_y, any);
-    }
-}
-
-fn padding_trbl(sn: &crate::style::StyledNode) -> (f32, f32, f32, f32) {
-    let mut pt = 0.0;
-    let mut pr = 0.0;
-    let mut pb = 0.0;
-    let mut pl = 0.0;
-
-    if let Some(v) = sn.value("padding") {
-        if let Some((a, b, c, d)) = parse_trbl_px(v) {
-            pt = a;
-            pr = b;
-            pb = c;
-            pl = d;
-        }
-    }
-
-    if let Some(v) = sn.value("padding-top").and_then(parse_px) {
-        pt = v;
-    }
-    if let Some(v) = sn.value("padding-right").and_then(parse_px) {
-        pr = v;
-    }
-    if let Some(v) = sn.value("padding-bottom").and_then(parse_px) {
-        pb = v;
-    }
-    if let Some(v) = sn.value("padding-left").and_then(parse_px) {
-        pl = v;
-    }
-
-    (pt, pr, pb, pl)
-}
-
-fn parse_trbl_px(s: &str) -> Option<(f32, f32, f32, f32)> {
-    let parts: Vec<&str> = s.split_whitespace().collect();
-
-    match parts.len() {
-        1 => {
-            let a = parse_px(parts[0])?;
-            Some((a, a, a, a))
-        }
-        2 => {
-            let a = parse_px(parts[0])?;
-            let b = parse_px(parts[1])?;
-            Some((a, b, a, b))
-        }
-        3 => {
-            let a = parse_px(parts[0])?;
-            let b = parse_px(parts[1])?;
-            let c = parse_px(parts[2])?;
-            Some((a, b, c, b))
-        }
-        4 => {
-            let a = parse_px(parts[0])?;
-            let b = parse_px(parts[1])?;
-            let c = parse_px(parts[2])?;
-            let d = parse_px(parts[3])?;
-            Some((a, b, c, d))
-        }
-        _ => None,
+fn inline_fragment_border_box(
+    fragment: &crate::layout::Rect,
+    dimensions: &crate::layout::Dimensions,
+) -> crate::layout::Rect {
+    crate::layout::Rect {
+        x: fragment.x - dimensions.padding.left - dimensions.border.left,
+        y: fragment.y - dimensions.padding.top - dimensions.border.top,
+        width: fragment.width
+            + dimensions.padding.left
+            + dimensions.padding.right
+            + dimensions.border.left
+            + dimensions.border.right,
+        height: fragment.height
+            + dimensions.padding.top
+            + dimensions.padding.bottom
+            + dimensions.border.top
+            + dimensions.border.bottom,
     }
 }
 

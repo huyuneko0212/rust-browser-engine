@@ -87,6 +87,7 @@ CSS 適用、レイアウト計算、display list 生成、GPU 描画までを�
 - inline formatting context の簡易実装
 - anonymous block box による inline 要素の流し込み
 - ネストした inline 要素の同一行レイアウト
+- inline paint fragment による複数行 background / border 描画
 - テキストの空白畳み込みと折り返し
 - 長い単語の文字単位折り返し
 - `margin`, `padding`, `border-width`, `border-radius`
@@ -101,7 +102,7 @@ CSS 適用、レイアウト計算、display list 生成、GPU 描画までを�
 
 - テキスト描画
 - 背景色描画
-- border 描画
+- block / inline border 描画
 - border-radius 描画
 - リスト bullet 描画
 - 画像描画
@@ -123,6 +124,7 @@ CSS 適用、レイアウト計算、display list 生成、GPU 描画までを�
 - inherited property を style tree 構築時に子孫へ伝播
 - anonymous block box を使って inline 要素の流し込みを実装
 - `fontdue` のメトリクスで文字幅を測り、折り返しと描画位置を計算
+- inline 要素の描画用に paint fragment を保持し、折り返し行ごとの background / border を生成
 - `fontdue` でグリフを rasterize し、glyph atlas を使ってテキスト描画
 - `wgpu` + WGSL により、矩形、border、画像、文字を個別パイプラインで描画
 - 画像は自然サイズ取得、失敗キャッシュ、GPU テクスチャキャッシュを持つ構成
@@ -161,7 +163,6 @@ CSS 適用、レイアウト計算、display list 生成、GPU 描画までを�
 - `position: sticky` のスクロール追従
 - 実ブラウザ水準の複雑な float 回り込み
 - `opacity` / `transform` などを含む実ブラウザ水準の stacking context 生成条件
-- inline 要素の border 描画
 - `font-family` に応じた実フォント切り替え
 
 ## 実行方法

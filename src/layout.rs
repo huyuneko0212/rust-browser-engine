@@ -1,6 +1,7 @@
 use crate::constants::layout as layout_constants;
 use crate::style::{Clear, Display, Float, Position, StyledNode};
 use fontdue::Font;
+use std::cmp::Ordering;
 
 pub trait ImageSizeProvider {
     /// layout が持っている src（相対/絶対/ポート付きなど）を
@@ -145,6 +146,11 @@ pub struct TextFragment {
     pub text: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct PaintFragment {
+    pub rect: Rect,
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 struct Insets {
     top: Option<f32>,
@@ -272,6 +278,7 @@ pub struct LayoutBox<'a> {
     pub dimensions: Dimensions,
     pub children: Vec<LayoutBox<'a>>,
     pub text_fragments: Vec<TextFragment>,
+    pub paint_fragments: Vec<PaintFragment>,
 }
 
 impl<'a> LayoutBox<'a> {
@@ -281,6 +288,7 @@ impl<'a> LayoutBox<'a> {
             dimensions: Dimensions::default(),
             children: vec![],
             text_fragments: vec![],
+            paint_fragments: vec![],
         }
     }
 
@@ -338,6 +346,7 @@ impl<'a> LayoutBox<'a> {
         img_cache: &dyn ImageSizeProvider,
     ) {
         self.text_fragments.clear();
+        self.paint_fragments.clear();
 
         match self.box_type {
             BoxType::BlockNode(_) => self.layout_block_with_context(
@@ -442,6 +451,8 @@ impl<'a> LayoutBox<'a> {
         font: &Font,
         img_cache: &dyn ImageSizeProvider,
     ) {
+        self.calculate_block_model(containing_block.clone());
+
         let (font_size, line_h, text_opt, img_opt) = if let Some(sn) = self.get_style_node() {
             let fs = font_size_px(sn).unwrap_or(layout_constants::DEFAULT_FONT_SIZE_PX);
             let lh = line_height_px(sn, fs);
@@ -475,6 +486,7 @@ impl<'a> LayoutBox<'a> {
                     .max(layout_constants::MIN_LAYOUT_SIZE_PX),
             );
             d.content.height = ih.max(layout_constants::MIN_LAYOUT_SIZE_PX);
+            sync_paint_fragments_with_content_rect(self);
             return;
         }
 
@@ -1140,9 +1152,12 @@ impl<'a> LayoutBox<'a> {
             pending_space_h: &mut f32,
         ) {
             node.text_fragments.clear();
+            node.paint_fragments.clear();
 
             match &mut node.box_type {
                 BoxType::InlineNode(_) => {
+                    node.calculate_block_model(containing_block.clone());
+
                     let (is_text, text, font_size, line_h, img_opt) = if let Some(sn) =
                         node.get_style_node()
                     {
@@ -1197,6 +1212,8 @@ impl<'a> LayoutBox<'a> {
 
                         *cursor_x += iw;
                         *current_line_h = (*current_line_h).max(ih);
+                        sync_paint_fragments_with_content_rect(node);
+                        node.apply_relative_position_if_needed(containing_block);
                         return;
                     }
 
@@ -1240,10 +1257,8 @@ impl<'a> LayoutBox<'a> {
                                 pending_space_h,
                             );
                         }
-                        node.dimensions.content.width = 0.0;
-                        node.dimensions.content.height = 0.0;
-                        node.dimensions.content.x = *cursor_x;
-                        node.dimensions.content.y = *cursor_y;
+                        sync_inline_paint_fragments_from_children(node);
+                        set_paint_content_rect(node, *cursor_x, *cursor_y);
                     }
 
                     node.apply_relative_position_if_needed(containing_block);
@@ -1414,6 +1429,11 @@ impl<'a> LayoutBox<'a> {
         self.dimensions.content.y += dy;
 
         for frag in &mut self.text_fragments {
+            frag.rect.x += dx;
+            frag.rect.y += dy;
+        }
+
+        for frag in &mut self.paint_fragments {
             frag.rect.x += dx;
             frag.rect.y += dy;
         }
@@ -1912,6 +1932,7 @@ fn layout_text_fragments(
     );
 
     set_text_content_rect(node, *cursor_x, *cursor_y);
+    sync_text_paint_fragments(node);
 }
 
 fn push_inline_word(
@@ -2120,6 +2141,123 @@ fn set_text_content_rect(node: &mut LayoutBox<'_>, fallback_x: f32, fallback_y: 
     node.dimensions.content.height = (max_y - min_y).max(0.0);
 }
 
+fn sync_text_paint_fragments(node: &mut LayoutBox<'_>) {
+    node.paint_fragments = node
+        .text_fragments
+        .iter()
+        .map(|fragment| PaintFragment {
+            rect: fragment.rect,
+        })
+        .collect();
+}
+
+fn sync_paint_fragments_with_content_rect(node: &mut LayoutBox<'_>) {
+    node.paint_fragments.clear();
+
+    let rect = node.dimensions.content;
+    if rect.width > 0.0 && rect.height > 0.0 {
+        node.paint_fragments.push(PaintFragment { rect });
+    }
+}
+
+fn sync_inline_paint_fragments_from_children(node: &mut LayoutBox<'_>) {
+    let mut rects = Vec::new();
+    for child in &node.children {
+        collect_inline_paint_source_rects(child, &mut rects);
+    }
+
+    node.paint_fragments = merge_inline_paint_source_rects(rects)
+        .into_iter()
+        .map(|rect| PaintFragment { rect })
+        .collect();
+}
+
+fn collect_inline_paint_source_rects(node: &LayoutBox<'_>, out: &mut Vec<Rect>) {
+    if node.node_position().is_out_of_flow() || node.node_float().is_floating() {
+        return;
+    }
+
+    if !node.paint_fragments.is_empty() {
+        out.extend(node.paint_fragments.iter().map(|fragment| fragment.rect));
+        return;
+    }
+
+    if node.children.is_empty() {
+        let rect = node.dimensions.content;
+        if rect.width > 0.0 && rect.height > 0.0 {
+            out.push(rect);
+        }
+        return;
+    }
+
+    for child in &node.children {
+        collect_inline_paint_source_rects(child, out);
+    }
+}
+
+fn merge_inline_paint_source_rects(mut rects: Vec<Rect>) -> Vec<Rect> {
+    rects.retain(|rect| rect.width > 0.0 && rect.height > 0.0);
+    rects.sort_by(|a, b| {
+        a.y.partial_cmp(&b.y)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(Ordering::Equal))
+    });
+
+    let mut merged = Vec::new();
+    for rect in rects {
+        let mut line_index = None;
+        for (index, line) in merged.iter().enumerate() {
+            if rects_share_line(*line, rect) {
+                line_index = Some(index);
+                break;
+            }
+        }
+
+        if let Some(index) = line_index {
+            merged[index] = union_rects(merged[index], rect);
+        } else {
+            merged.push(rect);
+        }
+    }
+
+    merged
+}
+
+fn rects_share_line(a: Rect, b: Rect) -> bool {
+    (a.y - b.y).abs() <= 0.5
+}
+
+fn union_rects(a: Rect, b: Rect) -> Rect {
+    let min_x = a.x.min(b.x);
+    let min_y = a.y.min(b.y);
+    let max_x = (a.x + a.width).max(b.x + b.width);
+    let max_y = (a.y + a.height).max(b.y + b.height);
+
+    Rect {
+        x: min_x,
+        y: min_y,
+        width: (max_x - min_x).max(0.0),
+        height: (max_y - min_y).max(0.0),
+    }
+}
+
+fn set_paint_content_rect(node: &mut LayoutBox<'_>, fallback_x: f32, fallback_y: f32) {
+    if node.paint_fragments.is_empty() {
+        node.dimensions.content.x = fallback_x;
+        node.dimensions.content.y = fallback_y;
+        node.dimensions.content.width = 0.0;
+        node.dimensions.content.height = 0.0;
+        return;
+    }
+
+    let mut rect = node.paint_fragments[0].rect;
+    for fragment in &node.paint_fragments[1..] {
+        rect = union_rects(rect, fragment.rect);
+    }
+
+    node.dimensions.content = rect;
+}
+
 /// fontdue実測で「折り返し行数」だけ返す
 fn count_lines_fontdue(font: &Font, text: &str, max_w: f32, font_size: f32) -> usize {
     let t = text.trim();
@@ -2321,6 +2459,37 @@ mod tests {
 
         assert!((learn_y - more_y).abs() <= 0.5);
         assert!((more_y - today_y).abs() <= 0.5);
+    }
+
+    #[test]
+    fn wrapped_inline_element_builds_multiple_paint_fragments() {
+        let styled = styled_tree_with_css(
+            r#"<p><span id="target">alpha beta gamma delta epsilon</span></p>"#,
+            r#"
+            p { display: block; width: 90px; margin: 0; padding: 0; }
+            #target { padding: 4px; border: 2px solid red; }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 240.0;
+        viewport.content.height = 400.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let span = find_element_by_id(&layout, "target").unwrap();
+
+        assert!(span.paint_fragments.len() >= 2);
+        assert!(
+            span.paint_fragments
+                .windows(2)
+                .all(|pair| pair[0].rect.y < pair[1].rect.y)
+        );
+        assert!(
+            span.paint_fragments
+                .iter()
+                .all(|fragment| fragment.rect.width > 0.0 && fragment.rect.height > 0.0)
+        );
     }
 
     #[test]

@@ -29,12 +29,9 @@ fn load_os_default_ui_font() -> Font {
     for candidate in system_font_candidates() {
         attempted.push(candidate.path.to_string());
 
-        if let Ok(font) = load_font_from_path(Path::new(candidate.path), candidate.collection_index) {
-            println!(
-                "UI font loaded: {} ({})",
-                candidate.label,
-                candidate.path
-            );
+        if let Ok(font) = load_font_from_path(Path::new(candidate.path), candidate.collection_index)
+        {
+            println!("UI font loaded: {} ({})", candidate.label, candidate.path);
             return font;
         }
     }

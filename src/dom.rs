@@ -2,17 +2,16 @@
 
 use std::collections::HashMap;
 
-
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub enum NodeType {
     Text(String),
-    Element(ElementData)
+    Element(ElementData),
 }
 
 #[derive(Debug, Clone)]
 pub struct Node {
     pub children: Vec<Node>,
-    pub node_type: NodeType
+    pub node_type: NodeType,
 }
 
 #[derive(Debug, Clone)]
