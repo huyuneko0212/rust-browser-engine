@@ -7,7 +7,13 @@ use crate::url;
 /// これを “画像キャッシュ / visited key / display の key” で統一する
 pub fn url_to_abs_string(u: &url::URL) -> String {
     match (u.scheme.as_str(), u.port) {
-        ("file", _) => format!("file://{}", u.path),
+        ("file", _) => {
+            if u.path.starts_with('/') {
+                format!("file://{}", u.path)
+            } else {
+                format!("file:///{}", u.path)
+            }
+        }
         ("http", protocol::HTTP_PORT) => format!("http://{}{}", u.host, u.path),
         ("https", protocol::HTTPS_PORT) => format!("https://{}{}", u.host, u.path),
         ("http", p) => format!("http://{}:{}{}", u.host, p, u.path),
