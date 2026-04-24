@@ -41,7 +41,6 @@ pub struct DrawBorder {
     pub border_width: f32,
 
     pub color: [f32; 4],
-    pub href: Option<String>,
     pub fixed: bool,
 }
 
@@ -70,7 +69,6 @@ pub struct DrawImage {
     pub src: String,
     pub key: String,
 
-    pub alt: Option<String>,
     pub href: Option<String>,
     pub hit: crate::layout::Rect,
     pub fixed: bool,
@@ -170,7 +168,6 @@ fn paint_node_contents(
                         radius,
                         border_width,
                         color: border_color,
-                        href: None,
                         fixed,
                     }));
                 }
@@ -335,7 +332,6 @@ fn paint_node_contents(
                             h: c.height,
                             src: key.clone(),
                             key,
-                            alt,
                             href: sn.link_href.clone(),
                             hit: c.clone(),
                             fixed,
@@ -1232,7 +1228,6 @@ fn paint_inline_element_fragments(node: &LayoutBox<'_>, out: &mut Vec<DisplayIte
                 radius,
                 border_width,
                 color: border_color,
-                href: None,
                 fixed,
             }));
         }
