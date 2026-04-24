@@ -398,7 +398,7 @@ fn style_tree_with_ctx(
     let mut link_id_here = inherited_link_id;
     if let NodeType::Element(ref e) = root.node_type {
         if e.tag_name == "a" {
-            if let Some(href) = e.attributes.get("href") {
+            if let Some(href) = e.href.as_deref() {
                 let h = href.trim();
                 if !h.is_empty()
                     && !h.starts_with('#')
