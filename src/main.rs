@@ -22,7 +22,7 @@ use winit::{
     dpi::LogicalSize,
     event::{ElementState, Event, Ime, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
-    keyboard::{Key, NamedKey},
+    keyboard::{Key, ModifiersState, NamedKey},
     window::{CursorIcon, WindowBuilder},
 };
 
@@ -572,6 +572,8 @@ fn load_layout_font() -> fontdue::Font {
 
 struct BrowserState {
     url: url::URL,
+    history: Vec<url::URL>,
+    history_index: usize,
     page: Option<PageDocument>,
     display_list: Vec<DisplayItem>,
     doc_height: f32,
@@ -587,7 +589,9 @@ impl BrowserState {
         font: &fontdue::Font,
     ) -> Self {
         let mut state = Self {
-            url: initial,
+            url: initial.clone(),
+            history: vec![initial],
+            history_index: 0,
             page: None,
             display_list: vec![],
             doc_height: 0.0,
@@ -606,9 +610,48 @@ impl BrowserState {
         font: &fontdue::Font,
     ) {
         println!("\n=== navigate -> {} ===", url_to_abs_string(&next));
+        if self.history_index + 1 < self.history.len() {
+            self.history.truncate(self.history_index + 1);
+        }
+        self.history.push(next.clone());
+        self.history_index = self.history.len() - 1;
         self.url = next;
         self.input_values.clear();
         self.focused_input = None;
+        self.load_current_url(viewport_width, viewport_height, font);
+    }
+
+    fn go_back(&mut self, viewport_width: f32, viewport_height: f32, font: &fontdue::Font) -> bool {
+        if self.history_index == 0 {
+            return false;
+        }
+
+        self.history_index -= 1;
+        self.url = self.history[self.history_index].clone();
+        println!("\n=== back -> {} ===", url_to_abs_string(&self.url));
+        self.load_current_url(viewport_width, viewport_height, font);
+        true
+    }
+
+    fn go_forward(
+        &mut self,
+        viewport_width: f32,
+        viewport_height: f32,
+        font: &fontdue::Font,
+    ) -> bool {
+        if self.history_index + 1 >= self.history.len() {
+            return false;
+        }
+
+        self.history_index += 1;
+        self.url = self.history[self.history_index].clone();
+        println!("\n=== forward -> {} ===", url_to_abs_string(&self.url));
+        self.load_current_url(viewport_width, viewport_height, font);
+        true
+    }
+
+    fn reload(&mut self, viewport_width: f32, viewport_height: f32, font: &fontdue::Font) {
+        println!("\n=== reload -> {} ===", url_to_abs_string(&self.url));
         self.load_current_url(viewport_width, viewport_height, font);
     }
 
@@ -716,6 +759,21 @@ impl BrowserState {
     }
 }
 
+fn window_title_for_url(url: &url::URL) -> String {
+    format!("{} - {}", browser::WINDOW_TITLE, url_to_abs_string(url))
+}
+
+fn reset_view_after_navigation(
+    state: &mut BrowserState,
+    scroll_y: &mut f32,
+    hovered_href: &mut Option<String>,
+    viewport_height: f32,
+) {
+    *scroll_y = clamp_scroll(0.0, state.doc_height, viewport_height);
+    *hovered_href = None;
+    apply_hover(&mut state.display_list, None);
+}
+
 fn main() {
     let url_str = env::args().nth(1).expect("url required");
     let initial_url = url::URL::new(&url_str);
@@ -742,11 +800,13 @@ fn main() {
         gpu.viewport_height(),
         &layout_font,
     );
+    window.set_title(&window_title_for_url(&state.url));
 
     let mut mouse_x = 0.0f32;
     let mut mouse_y = 0.0f32;
     let mut hovered_href: Option<String> = None;
     let mut scroll_y = 0.0f32;
+    let mut modifiers = ModifiersState::default();
 
     event_loop
         .run(move |event, elwt| {
@@ -809,10 +869,42 @@ fn main() {
                         }
                     }
 
+                    WindowEvent::ModifiersChanged(new) => {
+                        modifiers = new.state();
+                    }
+
                     WindowEvent::MouseInput {
                         state: st, button, ..
                     } => {
-                        if button == MouseButton::Left && st == ElementState::Pressed {
+                        if st == ElementState::Pressed && button == MouseButton::Back {
+                            if state.go_back(
+                                gpu.viewport_width(),
+                                gpu.viewport_height(),
+                                &layout_font,
+                            ) {
+                                reset_view_after_navigation(
+                                    &mut state,
+                                    &mut scroll_y,
+                                    &mut hovered_href,
+                                    gpu.viewport_height(),
+                                );
+                                window.set_title(&window_title_for_url(&state.url));
+                            }
+                        } else if st == ElementState::Pressed && button == MouseButton::Forward {
+                            if state.go_forward(
+                                gpu.viewport_width(),
+                                gpu.viewport_height(),
+                                &layout_font,
+                            ) {
+                                reset_view_after_navigation(
+                                    &mut state,
+                                    &mut scroll_y,
+                                    &mut hovered_href,
+                                    gpu.viewport_height(),
+                                );
+                                window.set_title(&window_title_for_url(&state.url));
+                            }
+                        } else if button == MouseButton::Left && st == ElementState::Pressed {
                             let input_hit =
                                 hit_test_input(&state.display_list, mouse_x, mouse_y, scroll_y);
                             if input_hit.is_some() {
@@ -834,15 +926,13 @@ fn main() {
                                         &layout_font,
                                     );
 
-                                    scroll_y = 0.0;
-                                    hovered_href = None;
-                                    apply_hover(&mut state.display_list, None);
-
-                                    scroll_y = clamp_scroll(
-                                        scroll_y,
-                                        state.doc_height,
+                                    reset_view_after_navigation(
+                                        &mut state,
+                                        &mut scroll_y,
+                                        &mut hovered_href,
                                         gpu.viewport_height(),
                                     );
+                                    window.set_title(&window_title_for_url(&state.url));
                                 }
                             } else if let Some(href) =
                                 hit_test_link(&state.display_list, mouse_x, mouse_y, scroll_y)
@@ -857,12 +947,13 @@ fn main() {
                                     &layout_font,
                                 );
 
-                                scroll_y = 0.0;
-                                hovered_href = None;
-                                apply_hover(&mut state.display_list, None);
-
-                                scroll_y =
-                                    clamp_scroll(scroll_y, state.doc_height, gpu.viewport_height());
+                                reset_view_after_navigation(
+                                    &mut state,
+                                    &mut scroll_y,
+                                    &mut hovered_href,
+                                    gpu.viewport_height(),
+                                );
+                                window.set_title(&window_title_for_url(&state.url));
                             } else {
                                 state.focus_input(None);
                                 window.set_ime_allowed(false);
@@ -871,6 +962,93 @@ fn main() {
                     }
 
                     WindowEvent::KeyboardInput { event, .. } => {
+                        if event.state == ElementState::Pressed {
+                            let ctrl_or_cmd = modifiers.control_key() || modifiers.super_key();
+                            let navigation_key = match &event.logical_key {
+                                Key::Named(NamedKey::BrowserBack) => Some(-1),
+                                Key::Named(NamedKey::BrowserForward) => Some(1),
+                                Key::Named(NamedKey::ArrowLeft) if modifiers.alt_key() => Some(-1),
+                                Key::Named(NamedKey::ArrowRight) if modifiers.alt_key() => Some(1),
+                                _ => None,
+                            };
+
+                            if let Some(direction) = navigation_key {
+                                let changed = if direction < 0 {
+                                    state.go_back(
+                                        gpu.viewport_width(),
+                                        gpu.viewport_height(),
+                                        &layout_font,
+                                    )
+                                } else {
+                                    state.go_forward(
+                                        gpu.viewport_width(),
+                                        gpu.viewport_height(),
+                                        &layout_font,
+                                    )
+                                };
+                                if changed {
+                                    reset_view_after_navigation(
+                                        &mut state,
+                                        &mut scroll_y,
+                                        &mut hovered_href,
+                                        gpu.viewport_height(),
+                                    );
+                                    window.set_title(&window_title_for_url(&state.url));
+                                }
+                                return;
+                            }
+
+                            let is_reload = matches!(
+                                &event.logical_key,
+                                Key::Named(NamedKey::BrowserRefresh) | Key::Named(NamedKey::F5)
+                            ) || (ctrl_or_cmd
+                                && matches!(
+                                    &event.logical_key,
+                                    Key::Character(ch) if ch.eq_ignore_ascii_case("r")
+                                ));
+                            if is_reload {
+                                state.reload(
+                                    gpu.viewport_width(),
+                                    gpu.viewport_height(),
+                                    &layout_font,
+                                );
+                                scroll_y =
+                                    clamp_scroll(scroll_y, state.doc_height, gpu.viewport_height());
+                                hovered_href = None;
+                                apply_hover(&mut state.display_list, None);
+                                window.set_title(&window_title_for_url(&state.url));
+                                return;
+                            }
+
+                            match &event.logical_key {
+                                Key::Named(NamedKey::PageDown) if state.focused_input.is_none() => {
+                                    scroll_y = clamp_scroll(
+                                        scroll_y + gpu.viewport_height() * 0.85,
+                                        state.doc_height,
+                                        gpu.viewport_height(),
+                                    );
+                                }
+                                Key::Named(NamedKey::PageUp) if state.focused_input.is_none() => {
+                                    scroll_y = clamp_scroll(
+                                        scroll_y - gpu.viewport_height() * 0.85,
+                                        state.doc_height,
+                                        gpu.viewport_height(),
+                                    );
+                                }
+                                Key::Named(NamedKey::Home) if state.focused_input.is_none() => {
+                                    scroll_y = 0.0;
+                                }
+                                Key::Named(NamedKey::End) if state.focused_input.is_none() => {
+                                    scroll_y = clamp_scroll(
+                                        state.doc_height,
+                                        state.doc_height,
+                                        gpu.viewport_height(),
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+
                         if event.state == ElementState::Pressed && state.focused_input.is_some() {
                             match &event.logical_key {
                                 Key::Named(NamedKey::Backspace) => {
@@ -894,6 +1072,7 @@ fn main() {
                                         scroll_y = 0.0;
                                         hovered_href = None;
                                         apply_hover(&mut state.display_list, None);
+                                        window.set_title(&window_title_for_url(&state.url));
                                     }
                                 }
                                 _ => {

@@ -1,6 +1,6 @@
 use crate::constants::protocol;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct URL {
     pub scheme: String,
     pub host: String,
@@ -67,7 +67,7 @@ impl URL {
 
         let mut parts = rest.splitn(2, '/');
         let mut host = parts.next().unwrap().to_string();
-        let path = format!("/{}", parts.next().unwrap());
+        let path = normalize_http_path(&format!("/{}", parts.next().unwrap()));
 
         let mut port = match scheme.as_str() {
             "http" => protocol::HTTP_PORT,
@@ -147,7 +147,7 @@ impl URL {
 
         if loc.starts_with('/') {
             let mut u = self.clone();
-            u.path = loc.to_string();
+            u.path = normalize_http_path(loc);
             return u;
         }
 
@@ -162,9 +162,46 @@ impl URL {
         }
 
         let mut u = self.clone();
-        u.path = format!("{}{}", base, loc);
+        u.path = normalize_http_path(&format!("{}{}", base, loc));
         u
     }
+}
+
+fn normalize_http_path(path: &str) -> String {
+    let (path_part, suffix) = split_path_suffix(path);
+    let mut segments = Vec::new();
+
+    for segment in path_part.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            other => segments.push(other),
+        }
+    }
+
+    let mut normalized = format!("/{}", segments.join("/"));
+    if path_part.ends_with('/') && !normalized.ends_with('/') {
+        normalized.push('/');
+    }
+    if normalized.is_empty() {
+        normalized.push('/');
+    }
+
+    normalized.push_str(suffix);
+    normalized
+}
+
+fn split_path_suffix(path: &str) -> (&str, &str) {
+    let suffix_start = path
+        .find('?')
+        .into_iter()
+        .chain(path.find('#'))
+        .min()
+        .unwrap_or(path.len());
+
+    (&path[..suffix_start], &path[suffix_start..])
 }
 
 fn strip_leading_slash_before_drive(mut p: String) -> String {
@@ -213,4 +250,32 @@ fn normalize_file_path(p: String) -> String {
     }
 
     joined
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_url_constructor_normalizes_dot_segments() {
+        let url = URL::new("https://example.com/a/./b/../c/?q=1");
+
+        assert_eq!(url.path, "/a/c/?q=1");
+    }
+
+    #[test]
+    fn resolve_relative_location_normalizes_parent_segments() {
+        let base = URL::new("https://example.com/docs/tutorial/index.html");
+        let next = base.resolve_location("../assets/./image.png");
+
+        assert_eq!(next.path, "/docs/assets/image.png");
+    }
+
+    #[test]
+    fn resolve_absolute_location_normalizes_parent_segments() {
+        let base = URL::new("https://example.com/docs/index.html");
+        let next = base.resolve_location("/a/b/../c.html?x=1");
+
+        assert_eq!(next.path, "/a/c.html?x=1");
+    }
 }
