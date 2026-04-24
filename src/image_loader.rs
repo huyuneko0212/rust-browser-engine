@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::{Mutex, OnceLock};
 
@@ -7,9 +7,14 @@ use image::GenericImageView;
 use crate::constants::{http_status, network};
 
 static FAILED_IMAGE_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static IMAGE_SIZE_CACHE: OnceLock<Mutex<HashMap<String, (u32, u32)>>> = OnceLock::new();
 
 fn failed_cache() -> &'static Mutex<HashSet<String>> {
     FAILED_IMAGE_KEYS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn size_cache() -> &'static Mutex<HashMap<String, (u32, u32)>> {
+    IMAGE_SIZE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub fn load_image_bytes(src: &str) -> Option<Vec<u8>> {
@@ -162,6 +167,13 @@ fn trim_prefix_ignore_ascii_case<'a>(s: &'a str, prefix: &str) -> &'a str {
 
 pub fn load_image_natural_size_px(src: &str) -> Option<(u32, u32)> {
     {
+        let cache = size_cache().lock().unwrap();
+        if let Some(size) = cache.get(src).copied() {
+            return Some(size);
+        }
+    }
+
+    {
         let cache = failed_cache().lock().unwrap();
         if cache.contains(src) {
             return None;
@@ -203,7 +215,10 @@ pub fn load_image_natural_size_px(src: &str) -> Option<(u32, u32)> {
 
         None
     } else {
-        Some((w, h))
+        let size = (w, h);
+        let mut cache = size_cache().lock().unwrap();
+        cache.insert(src.to_string(), size);
+        Some(size)
     }
 }
 
