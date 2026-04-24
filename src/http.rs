@@ -56,7 +56,6 @@ impl From<native_tls::Error> for HttpError {
     }
 }
 
-/// ★ここが今回の要点：`tls.connect(...)?` を通すための変換
 impl From<HandshakeError<TcpStream>> for HttpError {
     fn from(e: HandshakeError<TcpStream>) -> Self {
         match e {
@@ -68,7 +67,7 @@ impl From<HandshakeError<TcpStream>> for HttpError {
 
 pub struct Response {
     pub status_code: u16,
-    pub headers: HashMap<String, String>, // lower-case key
+    pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
     pub content_type: Option<String>,
 }
@@ -78,7 +77,6 @@ impl Response {
         String::from_utf8_lossy(&self.body).to_string()
     }
 
-    /// HTTP Content-Type ヘッダから charset を抽出する
     pub fn charset_from_header(&self) -> Option<String> {
         self.content_type.as_ref().and_then(|ct| {
             ct.split(';').skip(1).find_map(|part| {
@@ -97,8 +95,6 @@ impl Response {
         })
     }
 
-    /// 指定された文字コードでボディをデコード
-    /// charsetは例："utf-8", "shift_jis", "euc-jp" など
     pub fn body_text_with_charset(&self, charset: &str) -> String {
         let (cow, _, had_errors) = encoding_rs::Encoding::for_label(charset.as_bytes())
             .unwrap_or(encoding_rs::UTF_8)
@@ -119,13 +115,11 @@ impl Response {
     }
 }
 
-/// ✅ “本命” API：失敗を Result で返す（Rustっぽい / ブラウザっぽい）
 fn request(url: &URL) -> Result<Response, HttpError> {
     let tls = TlsConnector::new()?;
     request_with_tls(url, &tls)
 }
 
-/// ✅ 「落ちないレスポンス」が欲しい用途向け（画像ロード等）
 pub fn request_allow_error(url: &URL) -> Response {
     match request(url) {
         Ok(r) => r,
@@ -187,7 +181,6 @@ fn request_file(url: &URL) -> Result<Response, HttpError> {
 fn request_http_like(url: &URL, tls: &TlsConnector) -> Result<Response, HttpError> {
     let addr = format!("{}:{}", url.host, url.port);
     let stream = TcpStream::connect(addr)?;
-    // ブラウザっぽく：固まり防止（必要なら調整）
     let _ = stream.set_read_timeout(Some(Duration::from_secs(network::SOCKET_TIMEOUT_SECS)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(network::SOCKET_TIMEOUT_SECS)));
 
@@ -195,7 +188,6 @@ fn request_http_like(url: &URL, tls: &TlsConnector) -> Result<Response, HttpErro
 
     let raw = match url.scheme.as_str() {
         "https" => {
-            // ★ `HandshakeError<TcpStream>` → `HttpError` 変換があるので `?` が通る
             let mut tls_stream = tls.connect(&url.host, stream)?;
             tls_stream.write_all(req.as_bytes())?;
 
@@ -217,7 +209,6 @@ fn request_http_like(url: &URL, tls: &TlsConnector) -> Result<Response, HttpErro
     parse_response_bytes(raw)
 }
 
-/// “ブラウザっぽい” 最低限のリクエスト
 fn build_request(url: &URL) -> String {
     let path = if url.path.is_empty() { "/" } else { &url.path };
 
@@ -275,7 +266,6 @@ fn parse_response_bytes(resp: Vec<u8>) -> Result<Response, HttpError> {
         });
     }
 
-    // 1) chunked
     let mut decoded = body_bytes.to_vec();
     if headers
         .get("transfer-encoding")
@@ -284,7 +274,6 @@ fn parse_response_bytes(resp: Vec<u8>) -> Result<Response, HttpError> {
         decoded = decode_chunked(&decoded);
     }
 
-    // 2) content-encoding
     if let Some(enc) = headers.get("content-encoding") {
         let encs: Vec<String> = enc
             .split(',')

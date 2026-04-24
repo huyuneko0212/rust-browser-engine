@@ -1,10 +1,6 @@
-// src/url_utils.rs
-
 use crate::constants::protocol;
 use crate::url;
 
-/// URLを「正規化した絶対文字列」にする（default port を省略）
-/// これを “画像キャッシュ / visited key / display の key” で統一する
 pub fn url_to_abs_string(u: &url::URL) -> String {
     match (u.scheme.as_str(), u.port) {
         ("file", _) => {
@@ -22,12 +18,10 @@ pub fn url_to_abs_string(u: &url::URL) -> String {
     }
 }
 
-/// base に対して href/src を resolve する（trimだけここで吸収）
 pub fn normalize_against(base: &url::URL, href: &str) -> url::URL {
     base.resolve_location(href.trim())
 }
 
-/// base に対して href/src を resolve して、その結果を正規化キーにする
 pub fn normalized_key_against(base: &url::URL, href: &str) -> Option<String> {
     let h = href.trim();
     (!h.is_empty()).then(|| url_to_abs_string(&normalize_against(base, h)))

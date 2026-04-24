@@ -33,32 +33,27 @@ impl RectVertex {
             array_stride: stride,
             step_mode: VertexStepMode::Vertex,
             attributes: &[
-                // @location(0) pos
                 VertexAttribute {
                     offset: 0,
                     shader_location: 0,
                     format: VertexFormat::Float32x2,
                 },
-                // @location(1) color
                 VertexAttribute {
                     offset: size_of::<[f32; 2]>() as BufferAddress,
                     shader_location: 1,
                     format: VertexFormat::Float32x4,
                 },
-                // @location(2) rect_min
                 VertexAttribute {
                     offset: (size_of::<[f32; 2]>() + size_of::<[f32; 4]>()) as BufferAddress,
                     shader_location: 2,
                     format: VertexFormat::Float32x2,
                 },
-                // @location(3) outer_max
                 VertexAttribute {
                     offset: (size_of::<[f32; 2]>() + size_of::<[f32; 4]>() + size_of::<[f32; 2]>())
                         as BufferAddress,
                     shader_location: 3,
                     format: VertexFormat::Float32x2,
                 },
-                // @location(4) outer_radii
                 VertexAttribute {
                     offset: (size_of::<[f32; 2]>()
                         + size_of::<[f32; 4]>()
@@ -67,7 +62,6 @@ impl RectVertex {
                     shader_location: 4,
                     format: VertexFormat::Float32x4,
                 },
-                // @location(5) inner_min
                 VertexAttribute {
                     offset: (size_of::<[f32; 2]>()
                         + size_of::<[f32; 4]>()
@@ -77,7 +71,6 @@ impl RectVertex {
                     shader_location: 5,
                     format: VertexFormat::Float32x2,
                 },
-                // @location(6) inner_max
                 VertexAttribute {
                     offset: (size_of::<[f32; 2]>()
                         + size_of::<[f32; 4]>()
@@ -88,7 +81,6 @@ impl RectVertex {
                     shader_location: 6,
                     format: VertexFormat::Float32x2,
                 },
-                // @location(7) inner_radii
                 VertexAttribute {
                     offset: (size_of::<[f32; 2]>()
                         + size_of::<[f32; 4]>()
@@ -100,7 +92,6 @@ impl RectVertex {
                     shader_location: 7,
                     format: VertexFormat::Float32x4,
                 },
-                // @location(8) kind
                 VertexAttribute {
                     offset: (size_of::<[f32; 2]>()
                         + size_of::<[f32; 4]>()
@@ -233,7 +224,7 @@ impl AtlasPacker {
 
 struct CachedImage {
     bind_group: BindGroup,
-    _view: TextureView, // view を保持しておく（bind_group が参照するので寿命管理）
+    _view: TextureView, // view を保持しておく(bind_group が参照するので寿命管理)
     _tex: Texture,      // texture も保持
 }
 
@@ -249,17 +240,14 @@ pub struct GPU<'a> {
     pub queue: Queue,
     pub config: SurfaceConfiguration,
 
-    // rect pipeline
     rect_pipeline: RenderPipeline,
     rect_vbuf: Buffer,
     rect_cap: usize,
 
-    // text pipeline
     text_pipeline: RenderPipeline,
     text_vbuf: Buffer,
     text_cap: usize,
 
-    // image pipeline
     image_pipeline: RenderPipeline,
     image_vbuf: Buffer,
     image_cap: usize,
@@ -267,7 +255,6 @@ pub struct GPU<'a> {
     image_sampler: Sampler,
     image_cache: HashMap<String, CachedImage>,
 
-    // glyph atlas
     atlas_tex: Texture,
     #[allow(dead_code)]
     atlas_view: TextureView,
@@ -277,7 +264,6 @@ pub struct GPU<'a> {
     atlas_size: u32,
     packer: AtlasPacker,
 
-    // font + glyph cache
     font: fontdue::Font,
     glyph_cache: HashMap<(char, u32), GlyphEntry>, // (char, size_px_rounded)
 }
@@ -324,10 +310,8 @@ impl<'a> GPU<'a> {
         };
         surface.configure(&device, &config);
 
-        // ---------- load bundled UI font ----------
         let font = crate::font::load_default_ui_font();
 
-        // ---------- rect pipeline ----------
         let rect_shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("rect shader"),
             source: ShaderSource::Wgsl(include_str!("rect.wgsl").into()),
@@ -371,7 +355,6 @@ impl<'a> GPU<'a> {
             mapped_at_creation: false,
         });
 
-        // ---------- glyph atlas ----------
         let atlas_size = gpu_constants::GLYPH_ATLAS_SIZE_PX;
         let atlas_tex = device.create_texture(&TextureDescriptor {
             label: Some("glyph atlas"),
@@ -432,7 +415,6 @@ impl<'a> GPU<'a> {
             ],
         });
 
-        // ---------- text pipeline ----------
         let text_shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("text shader"),
             source: ShaderSource::Wgsl(include_str!("text.wgsl").into()),
@@ -477,7 +459,6 @@ impl<'a> GPU<'a> {
             mapped_at_creation: false,
         });
 
-        // ---------- image sampler / bgl / pipeline ----------
         let image_sampler = device.create_sampler(&SamplerDescriptor {
             label: Some("image sampler"),
             mag_filter: FilterMode::Linear,
@@ -594,7 +575,6 @@ impl<'a> GPU<'a> {
     }
 
     pub fn render_items(&mut self, items: &[DisplayItem], scroll_y: f32) {
-        // 先に image のキャッシュを作る（bind_group が必要）。
         for item in items {
             if let DisplayItem::Image(im) = item {
                 let _ = self.get_or_upload_image(&im.key, &im.src);
@@ -810,7 +790,6 @@ impl<'a> GPU<'a> {
                 continue;
             }
 
-            // NDC 変換
             let x1 = (r.x / w) * 2.0 - 1.0;
             let y1 = 1.0 - (ry / h) * 2.0;
             let x2 = ((r.x + r.w) / w) * 2.0 - 1.0;
@@ -1114,7 +1093,6 @@ impl<'a> GPU<'a> {
             return self.image_cache.get(key);
         }
 
-        // file:// / http(s):// 両対応（image_loader に委譲）
         let bytes = image_loader::load_image_bytes(src)?;
         let img = image::load_from_memory(&bytes).ok()?;
         let rgba = img.to_rgba8();

@@ -6,7 +6,6 @@ use image::GenericImageView;
 
 use crate::constants::{http_status, network};
 
-/// 画像ロードに失敗したキー（正規化済み URL 文字列）を覚えておく
 static FAILED_IMAGE_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 fn failed_cache() -> &'static Mutex<HashSet<String>> {
@@ -19,7 +18,6 @@ pub fn load_image_bytes(src: &str) -> Option<Vec<u8>> {
         return None;
     }
 
-    // URL系
     if starts_with_ignore_ascii_case(src, "file://") {
         return load_file_url_bytes(src);
     }
@@ -29,14 +27,11 @@ pub fn load_image_bytes(src: &str) -> Option<Vec<u8>> {
         return load_http_url_bytes_follow_redirects(src, network::IMAGE_MAX_REDIRECTS);
     }
 
-    // それ以外（生の Windows パス救済）
-    // 例: D:\path\to\a.png / D:/path/to/a.png
     if looks_like_windows_path(src) {
         let path = percent_decode_minimal(src);
         return fs::read(path).ok();
     }
 
-    // Linux/macOS の絶対パス救済（/home/... など）
     if src.starts_with('/') {
         let path = percent_decode_minimal(src);
         return fs::read(path).ok();
@@ -44,10 +39,6 @@ pub fn load_image_bytes(src: &str) -> Option<Vec<u8>> {
 
     None
 }
-
-// ------------------------------------------------------------
-// HTTP/HTTPS（リダイレクト追従）
-// ------------------------------------------------------------
 
 fn load_http_url_bytes_follow_redirects(src: &str, max_redirects: usize) -> Option<Vec<u8>> {
     let mut current = crate::url::URL::new(src);
@@ -57,11 +48,9 @@ fn load_http_url_bytes_follow_redirects(src: &str, max_redirects: usize) -> Opti
         if resp.status_code == http_status::REQUEST_FAILED || resp.body.is_empty() {
             return None;
         }
-        // 2xx
         if (http_status::SUCCESS_MIN..http_status::SUCCESS_MAX_EXCLUSIVE)
             .contains(&resp.status_code)
         {
-            // Content-Type はサイトによって雑なので、ここは「ログだけ」で基本許容
             if let Some(ct) = &resp.content_type {
                 let ct_l = ct.to_lowercase();
                 if !ct_l.starts_with("image/") && !ct_l.contains("octet-stream") {
@@ -74,9 +63,7 @@ fn load_http_url_bytes_follow_redirects(src: &str, max_redirects: usize) -> Opti
             return Some(resp.body);
         }
 
-        // redirect
         if http_status::REDIRECTS.contains(&resp.status_code) {
-            // http.rs 側で headers は lower-case に統一しているので "location" だけ見ればOK
             let location = resp.header("location").map(|s| s.trim().to_string());
 
             let location = match location {
@@ -95,7 +82,6 @@ fn load_http_url_bytes_follow_redirects(src: &str, max_redirects: usize) -> Opti
             continue;
         }
 
-        // error
         eprintln!(
             "[img] http failed status={} url={}",
             resp.status_code, current.path
@@ -107,55 +93,34 @@ fn load_http_url_bytes_follow_redirects(src: &str, max_redirects: usize) -> Opti
     None
 }
 
-// ------------------------------------------------------------
-// file://
-// ------------------------------------------------------------
-
 fn load_file_url_bytes(src: &str) -> Option<Vec<u8>> {
-    // file://... をパスに落として fs::read
     let mut rest = src.trim();
 
-    // scheme落とし（大小無視）
     rest = trim_prefix_ignore_ascii_case(rest, "file://");
 
-    // file://localhost/...
     if starts_with_ignore_ascii_case(rest, "localhost/") {
         rest = &rest["localhost/".len()..];
     } else if starts_with_ignore_ascii_case(rest, "localhost") && rest.len() == "localhost".len() {
-        // "file://localhost" だけ
         return None;
     }
 
-    // 先頭に "/" が来るパターン:
-    //  - file:///D:/...   → "/D:/..." になる
-    //  - file:///%3A...   → decode後に直す
     let mut path = rest.to_string();
 
-    // URLエンコード最小デコード
     path = percent_decode_minimal(&path);
 
-    // Windows: "/D:/..." なら先頭の "/" を落とす
     if path.starts_with('/') && path.get(2..3) == Some(":") {
         path = path.trim_start_matches('/').to_string();
     }
 
-    // "C:\..." や "D:/..." ならOK
-    // "/home/..." もOK
     fs::read(&path).ok()
 }
 
-// ------------------------------------------------------------
-// utils
-// ------------------------------------------------------------
-
 fn looks_like_windows_path(s: &str) -> bool {
-    // "D:\..." / "D:/..." を雑に判定
     let b = s.as_bytes();
     b.len() >= 3 && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
 }
 
 fn percent_decode_minimal(s: &str) -> String {
-    // %XX を最小でデコード（UTF-8前提）
     let bytes = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -195,21 +160,14 @@ fn trim_prefix_ignore_ascii_case<'a>(s: &'a str, prefix: &str) -> &'a str {
     }
 }
 
-// ------------------------------------------------------------
-// 画像の natural size (+ 失敗キャッシュ)
-// ------------------------------------------------------------
-
 pub fn load_image_natural_size_px(src: &str) -> Option<(u32, u32)> {
     {
         let cache = failed_cache().lock().unwrap();
         if cache.contains(src) {
-            // 失敗済み → すぐ None を返す（重い処理を避ける）
-            // eprintln!("[img] skip (cached failure) src={}", src);
             return None;
         }
     }
 
-    // バイト取得
     let bytes = match load_image_bytes(src) {
         Some(b) => b,
         None => {
@@ -222,7 +180,6 @@ pub fn load_image_natural_size_px(src: &str) -> Option<(u32, u32)> {
         }
     };
 
-    // デコード
     let img = match image::load_from_memory(&bytes) {
         Ok(i) => i,
         Err(e) => {

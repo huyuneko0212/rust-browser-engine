@@ -4,11 +4,11 @@ use fontdue::Font;
 use std::cmp::Ordering;
 
 pub trait ImageSizeProvider {
-    /// layout が持っている src（相対/絶対/ポート付きなど）を
-    /// “キャッシュキーと同じ正規化済み絶対URL文字列” に変換する
+    /// layout が持っている src (相対/絶対/ポート付きなど)を
+    /// "キャッシュキーと同じ正規化済み絶対URL文字列" に変換する
     fn normalize_src_key(&self, src: &str) -> Option<String>;
 
-    /// key(正規化済み絶対URL文字列) から自然サイズ(px)を返す
+    /// key (正規化済み絶対URL文字列) から自然サイズ(px)を返す
     fn natural_size_px(&self, key: &str) -> Option<(u32, u32)>;
 }
 
@@ -932,7 +932,6 @@ impl<'a> LayoutBox<'a> {
         }
     }
 
-    /// margin/padding/border/border-radius を style から読む
     fn calculate_block_model(&mut self, containing: Dimensions) {
         let viewport_w = containing.content.width;
         let viewport_h = containing
@@ -953,13 +952,11 @@ impl<'a> LayoutBox<'a> {
             pb_s,
             margin_sh,
             padding_sh,
-            // border-width 系
             blw_s,
             brw_s,
             btw_s,
             bbw_s,
             border_width_sh,
-            // border-radius
             border_radius_sh,
             border_tl_radius_s,
             border_tr_radius_s,
@@ -977,13 +974,11 @@ impl<'a> LayoutBox<'a> {
                 style.value("padding-bottom").cloned(),
                 style.value("margin").cloned(),
                 style.value("padding").cloned(),
-                // border-width
                 style.value("border-left-width").cloned(),
                 style.value("border-right-width").cloned(),
                 style.value("border-top-width").cloned(),
                 style.value("border-bottom-width").cloned(),
                 style.value("border-width").cloned(),
-                // border-radius
                 style.value("border-radius").cloned(),
                 style.value("border-top-left-radius").cloned(),
                 style.value("border-top-right-radius").cloned(),
@@ -1011,13 +1006,11 @@ impl<'a> LayoutBox<'a> {
         let mut pt = 0.0;
         let mut pb = 0.0;
 
-        // border-width 初期値
         let mut bl = 0.0;
         let mut br = 0.0;
         let mut bt = 0.0;
         let mut bb = 0.0;
 
-        // --- margin 個別 ---
         if let Some(v) = ml_s.as_deref() {
             if v.trim() != "auto" {
                 ml = parse_length(style_node, v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
@@ -1035,7 +1028,6 @@ impl<'a> LayoutBox<'a> {
             mb = parse_length(style_node, v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
         }
 
-        // --- padding 個別 ---
         if let Some(v) = pl_s.as_deref() {
             pl = parse_length(style_node, v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
         }
@@ -1049,7 +1041,6 @@ impl<'a> LayoutBox<'a> {
             pb = parse_length(style_node, v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
         }
 
-        // --- border-width 個別 ---
         if let Some(v) = blw_s.as_deref() {
             bl = parse_length(style_node, v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
         }
@@ -1063,7 +1054,6 @@ impl<'a> LayoutBox<'a> {
             bb = parse_length(style_node, v, parent_w, viewport_w, viewport_h).unwrap_or(0.0);
         }
 
-        // shorthand margin（個別指定が無い場合のみ）
         if ml_s.is_none() && mr_s.is_none() && mt_s.is_none() && mb_s.is_none() {
             if let Some(sh) = margin_sh.as_deref() {
                 let m = parse_4len(sh);
@@ -1090,7 +1080,6 @@ impl<'a> LayoutBox<'a> {
             }
         }
 
-        // shorthand padding（個別指定が無い場合のみ）
         if pl_s.is_none() && pr_s.is_none() && pt_s.is_none() && pb_s.is_none() {
             if let Some(sh) = padding_sh.as_deref() {
                 let p = parse_4len(sh);
@@ -1113,7 +1102,6 @@ impl<'a> LayoutBox<'a> {
             }
         }
 
-        // shorthand border-width（個別指定が無い場合のみ）
         if blw_s.is_none() && brw_s.is_none() && btw_s.is_none() && bbw_s.is_none() {
             if let Some(sh) = border_width_sh.as_deref() {
                 let b = parse_4len(sh);
@@ -1136,7 +1124,6 @@ impl<'a> LayoutBox<'a> {
             }
         }
 
-        // border-radius
         let mut border_radius = CornerRadii::default();
         if let Some(v) = border_radius_sh.as_deref() {
             if let Some(r) =
@@ -1166,7 +1153,6 @@ impl<'a> LayoutBox<'a> {
             }
         }
 
-        // 値を Dimensions に反映
         self.dimensions.margin.left = ml;
         self.dimensions.margin.right = mr;
         self.dimensions.margin.top = mt;
@@ -1198,7 +1184,6 @@ impl<'a> LayoutBox<'a> {
 
         let width_str = style_node.and_then(|s| s.value("width")).cloned();
 
-        // margin:auto 判定
         let (ml_auto, mr_auto) = style_node
             .map(|s| {
                 let mut la = s
@@ -1580,7 +1565,7 @@ impl<'a> LayoutBox<'a> {
             clamp_height_to_constraints(resolved_height, min_height, max_height);
     }
 
-    /// ★IFC: anonymous block の中の inline subtree を “行に詰める”
+    /// IFC: anonymous block の中の inline subtree を "行に詰める"
     fn layout_inline_formatting_context(
         &mut self,
         positioned_containing_block: Dimensions,
@@ -2031,11 +2016,6 @@ pub fn build_layout_tree(style_node: &StyledNode) -> LayoutBox<'_> {
 }
 
 fn build_layout_tree_with_mode(style_node: &StyledNode, force_block_root: bool) -> LayoutBox<'_> {
-    // browser.engineering 的に
-    // - block の子: block はそのまま
-    // - inline の連続: Anonymous block box にまとめて、その中に inline を入れる
-    // - inline の子: Chrome と同じように同じ IFC の中へ直列に流す
-    // - flex の子: direct children を flex item として積む
     let display = style_node.display();
     let layout_display = if force_block_root {
         blockified_display_for(style_node)
@@ -2123,8 +2103,6 @@ fn append_flex_child<'a>(root: &mut LayoutBox<'a>, child: &'a StyledNode) {
         },
     }
 }
-
-// ---------------- helpers ----------------
 
 fn layout_display_for(style_node: &StyledNode) -> Display {
     let display = style_node.display();
@@ -2651,11 +2629,6 @@ fn line_height_px(sn: &crate::style::StyledNode, _font_size: f32) -> f32 {
     sn.line_height_px()
 }
 
-/// ★img の最小 intrinsic size
-/// 優先順位:
-/// 1) CSS width/height (px/em/rem)
-/// 2) HTML attributes width/height (数値)
-/// 3) fallback default image size
 fn img_intrinsic_size_px(
     sn: &crate::style::StyledNode,
     img_cache: &dyn ImageSizeProvider,
@@ -2682,15 +2655,11 @@ fn img_intrinsic_size_px(
         (None, None, None)
     };
 
-    // -------------------------
-    // ★ここがキモ：src を正規化してから cache を引く
-    // -------------------------
     let natural = src_opt
         .as_deref()
         .and_then(|src| img_cache.normalize_src_key(src))
         .and_then(|key| img_cache.natural_size_px(&key));
 
-    // まずは明示指定（CSS/attr）
     if let (Some(w), Some(h)) = (css_w.or(attr_w), css_h.or(attr_h)) {
         return (
             w.max(layout_constants::MIN_LAYOUT_SIZE_PX),
@@ -2699,7 +2668,6 @@ fn img_intrinsic_size_px(
     }
 
     if let Some(w) = css_w.or(attr_w) {
-        // 片方だけ指定：もう片方は自然サイズで補完
         if let Some((nw, nh)) = natural {
             if nw > 0 && nh > 0 {
                 let ratio = (nh as f32) / (nw as f32);
@@ -2731,7 +2699,6 @@ fn img_intrinsic_size_px(
         );
     }
 
-    // 明示指定が無いなら自然サイズ
     if let Some((nw, nh)) = natural {
         return (
             (nw as f32).max(layout_constants::MIN_LAYOUT_SIZE_PX),
@@ -2745,7 +2712,6 @@ fn img_intrinsic_size_px(
     )
 }
 
-/// styleノードから Text を集める（leaf block の救済用）
 fn collect_text_nodes(sn: &StyledNode, out: &mut String) {
     match &sn.node.node_type {
         crate::dom::NodeType::Text(t) => {

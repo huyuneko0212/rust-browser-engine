@@ -13,7 +13,6 @@ pub struct Rule {
 
 #[derive(Debug, Clone)]
 pub struct Selector {
-    // いまは「文字列で保持」するだけ（例: "body", "h1", ".card", "#main", "div.content"）
     pub simple: String,
 }
 
@@ -83,7 +82,6 @@ impl Parser {
         loop {
             self.consume_whitespace();
 
-            // コメント
             if self.starts_with("/*") {
                 self.consume_char(); // '/'
                 self.consume_char(); // '*'
@@ -101,11 +99,8 @@ impl Parser {
         }
     }
 
-    /// '@media ... { ... }' / '@import ...;' 等を丸ごと捨てる
     fn skip_at_rule(&mut self) {
-        // '@' を含む行を ';' または '{...}' 終端まで飛ばす
         while !self.eof() && self.next_char() != ';' && self.next_char() != '{' {
-            // コメントも飛ばす
             if self.starts_with("/*") {
                 self.consume_whitespace_and_comments();
                 continue;
@@ -120,7 +115,6 @@ impl Parser {
             return;
         }
 
-        // '{' ブロック
         if self.next_char() == '{' {
             self.consume_char();
             let mut depth = 1i32;
@@ -148,7 +142,6 @@ impl Parser {
                 break;
             }
 
-            // at-rule をスキップ
             if self.next_char() == '@' {
                 self.skip_at_rule();
                 continue;
@@ -166,7 +159,6 @@ impl Parser {
     }
 
     fn recover_to_next_rule(&mut self) {
-        // 次の '{' または ';' または '}' まで進める
         while !self.eof() {
             if self.starts_with("/*") {
                 self.consume_whitespace_and_comments();
@@ -184,7 +176,6 @@ impl Parser {
     fn parse_rule(&mut self) -> Option<Rule> {
         self.consume_whitespace_and_comments();
 
-        // selectors ... '{'
         let selectors = self.parse_selectors();
         self.consume_whitespace_and_comments();
 
@@ -192,7 +183,6 @@ impl Parser {
             return None;
         }
 
-        // declarations block
         let declarations = self.parse_declarations();
 
         Some(Rule {
@@ -202,8 +192,6 @@ impl Parser {
     }
 
     fn parse_selectors(&mut self) -> Vec<Selector> {
-        // '{' までを selector text として読み、 ',' で分割
-        // 例: "body, html" / "div.content > p" も “文字列として保持” する
         let raw = self.consume_while(|c| c != '{' && c != '\0');
         let raw = raw.trim();
 
@@ -225,7 +213,6 @@ impl Parser {
 
         self.consume_whitespace_and_comments();
 
-        // '{' が無ければ空
         if self.eof() || self.next_char() != '{' {
             return decls;
         }
@@ -237,19 +224,16 @@ impl Parser {
                 break;
             }
 
-            // ブロック終了
             if self.next_char() == '}' {
                 self.consume_char();
                 break;
             }
 
-            // at-rule が来てもブロック内でスキップ
             if self.next_char() == '@' {
                 self.skip_at_rule();
                 continue;
             }
 
-            // ★ ここ変更: parse_declaration が Vec<Declaration> を返す
             if let Some(ds) = self.parse_declaration() {
                 decls.extend(ds);
             } else {
@@ -267,7 +251,6 @@ impl Parser {
     fn parse_declaration(&mut self) -> Option<Vec<Declaration>> {
         self.consume_whitespace_and_comments();
 
-        // name: 英数字/ハイフン/アンダースコア を許可（CSS変数: --foo も通す）
         let name = self.consume_while(|c| c.is_alphanumeric() || c == '-' || c == '_');
         self.consume_whitespace_and_comments();
 
@@ -275,14 +258,12 @@ impl Parser {
             return None;
         }
 
-        // ':' が来なければ宣言として成立しない（panicしない）
         if self.eof() || self.next_char() != ':' {
             return None;
         }
         self.consume_char(); // ':'
         self.consume_whitespace_and_comments();
 
-        // value：';' or '}' まで。ただし括弧内は ';' を無視する
         let mut value = String::new();
         let mut paren_depth = 0i32;
 
@@ -305,7 +286,6 @@ impl Parser {
                 continue;
             }
 
-            // 終端判定
             if paren_depth == 0 && (c == ';' || c == '}') {
                 break;
             }
@@ -313,19 +293,16 @@ impl Parser {
             value.push(self.consume_char());
         }
 
-        // ';' があれば消費
         if !self.eof() && self.next_char() == ';' {
             self.consume_char();
         }
 
         let value = value.trim().to_string();
 
-        // ショートハンド展開
         Some(self.expand_declaration(name, value))
     }
 
     fn skip_bad_declaration(&mut self) {
-        // ';' または '}' まで飛ばす（'}' は消費しない）
         while !self.eof() {
             if self.starts_with("/*") {
                 self.consume_whitespace_and_comments();
@@ -343,10 +320,6 @@ impl Parser {
         }
     }
 
-    /// ショートハンドを展開する。
-    /// - border: 1px solid red;
-    ///   → border-width: 1px; / border-color: red;
-    /// それ以外はそのまま 1 件の Declaration にする。
     fn expand_declaration(&self, name: String, value: String) -> Vec<Declaration> {
         if name.eq_ignore_ascii_case("border") {
             self.expand_border_shorthand(value)
@@ -361,15 +334,10 @@ impl Parser {
         let mut width: Option<String> = None;
         let mut color: Option<String> = None;
 
-        // めちゃくちゃ簡易な実装：
-        // - "px" で終わるトークン → 幅
-        // - "solid" は無視
-        // - それ以外の最初のトークン → 色
         for token in value.split_whitespace() {
             if token.ends_with("px") && width.is_none() {
                 width = Some(token.to_string());
             } else if token.eq_ignore_ascii_case("solid") {
-                // 今回は solid のみ対応、値としては保持しない
                 continue;
             } else if color.is_none() {
                 color = Some(token.to_string());
@@ -389,8 +357,6 @@ impl Parser {
             });
         }
 
-        // もし width / color のどちらも取れなかった場合、
-        // 元の "border" も残しておくほうが安全かもしれない。
         if decls.is_empty() {
             decls.push(Declaration {
                 name: "border".to_string(),

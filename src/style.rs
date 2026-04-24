@@ -129,19 +129,17 @@ impl StyledNode {
             )
     }
 
-    /// display の最小実装（IFC向け）
+    /// display の最小実装 (IFC向け)
     /// - Textノードは必ず Inline
     /// - CSS display 指定があれば最優先
     /// - head/title/meta/script/style/link は None
     /// - よくある block 要素は Block
-    /// - それ以外は Inline（迷ったら inline のほうが IFC が動きやすい）
+    /// - それ以外は Inline (迷ったら inline のほうが IFC が動きやすい)
     pub fn display(&self) -> Display {
-        // Textノードは必ず inline
         if matches!(self.node.node_type, NodeType::Text(_)) {
             return Display::Inline;
         }
 
-        // CSSで指定があれば最優先
         if let Some(v) = self.value("display").map(|s| s.trim()) {
             return match v {
                 "block" => Display::Block,
@@ -153,7 +151,6 @@ impl StyledNode {
             };
         }
 
-        // Element のデフォルト表示（超最小）
         if let NodeType::Element(ref e) = self.node.node_type {
             let tag = e.tag_name.as_str();
 
@@ -163,7 +160,6 @@ impl StyledNode {
             if is_block_element(tag) {
                 return Display::Block;
             }
-            // それ以外は inline 扱い
             return Display::Inline;
         }
 
@@ -217,7 +213,6 @@ impl StyledNode {
         self.value("color").and_then(|v| parse_color(v))
     }
     pub fn border_color(&self) -> Option<[f32; 4]> {
-        // border-color がなければ color を使う
         if let Some(v) = self.value("border-color").or_else(|| self.value("color")) {
             parse_color(v)
         } else {
@@ -226,7 +221,6 @@ impl StyledNode {
     }
 
     pub fn background_color(&self) -> Option<[f32; 4]> {
-        // background も background-color も見る（最小実装）
         if let Some(v) = self.value("background-color") {
             return parse_color(v);
         }
@@ -241,12 +235,12 @@ impl StyledNode {
     }
 }
 
-/// そもそも表示しない（display:none相当）
+/// そもそも表示しない (display: none相当)
 fn is_hidden_element(tag: &str) -> bool {
     matches!(tag, "head" | "meta" | "title" | "script" | "style" | "link")
 }
 
-/// HTMLのデフォルト表示に寄せた “最小” block 判定
+/// HTMLのデフォルト表示に寄せた "最小" block 判定
 fn is_block_element(tag: &str) -> bool {
     matches!(
         tag,
@@ -274,10 +268,6 @@ fn is_block_element(tag: &str) -> bool {
     )
 }
 
-// =========================================================
-// descendant / child selector のための祖先情報
-// =========================================================
-
 #[derive(Debug, Clone)]
 struct Ancestor {
     tag: String,
@@ -292,10 +282,6 @@ fn ancestor_of(e: &ElementData) -> Ancestor {
         classes: e.classes().iter().map(|s| s.to_string()).collect(),
     }
 }
-
-// =========================================================
-// ★ 継承するプロパティ（最小）
-// =========================================================
 
 const INHERITABLE_PROPS: &[&str] = &[
     "color",
@@ -350,8 +336,6 @@ fn is_unitless_number(value: &str) -> bool {
     value.trim().parse::<f32>().is_ok()
 }
 
-// =========================================================
-
 pub fn style_tree(root: Node, stylesheet: &Stylesheet) -> StyledNode {
     let mut next_link_id = 1usize;
     let initial_font_size_px = layout_constants::DEFAULT_FONT_SIZE_PX;
@@ -379,11 +363,9 @@ fn style_tree_with_ctx(
     root_font_size_px: f32,
     next_link_id: &mut usize,
 ) -> StyledNode {
-    // まず継承値をベースにする（Textにも効く）
     let mut specified_values = inherited_values.clone();
     let mut own_values = HashMap::new();
 
-    // Elementなら、自分に当たるCSSで上書き
     if let NodeType::Element(ref e) = root.node_type {
         own_values = specified_values_for(e, stylesheet, ancestors);
         for declaration in parse_inline_style_attr(e) {
@@ -412,7 +394,6 @@ fn style_tree_with_ctx(
         specified_values.insert(k, v);
     }
 
-    // link 継承（a の href を子孫テキストへ渡す）
     let mut link_here = inherited_link.clone();
     let mut link_id_here = inherited_link_id;
     if let NodeType::Element(ref e) = root.node_type {
@@ -432,13 +413,11 @@ fn style_tree_with_ctx(
         }
     }
 
-    // 子へ渡す ancestor stack
     let mut next_ancestors = ancestors.clone();
     if let NodeType::Element(ref e) = root.node_type {
         next_ancestors.push(ancestor_of(e));
     }
 
-    // ★ 子へ渡す継承値（継承プロパティだけ）
     let next_inherited_values = inherited_values_for_children(
         &specified_values,
         computed_font_size_px,
@@ -474,8 +453,6 @@ fn style_tree_with_ctx(
         link_id: link_id_here,
     }
 }
-
-// ---------------- selector matching ----------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Specificity(u32, u32, u32); // (id, class, tag)
@@ -668,17 +645,14 @@ fn selector_matches_simple_elem(elem: &ElementData, selector: &str) -> bool {
         return false;
     }
 
-    // #id
     if let Some(id) = s.strip_prefix('#') {
         return elem.id() == Some(id);
     }
 
-    // .class
     if let Some(class) = s.strip_prefix('.') {
         return elem.classes().iter().any(|c| *c == class);
     }
 
-    // tag.class（簡易）
     if let Some((tag, class)) = s.split_once('.') {
         if elem.tag_name != tag {
             return false;
@@ -686,7 +660,6 @@ fn selector_matches_simple_elem(elem: &ElementData, selector: &str) -> bool {
         return elem.classes().iter().any(|c| *c == class);
     }
 
-    // tag
     elem.tag_name == s
 }
 
@@ -754,8 +727,6 @@ fn specificity_of_simple(s: &str) -> Specificity {
     }
     Specificity(0, 0, 1)
 }
-
-// ---------------- color ----------------
 
 pub fn resolve_css_length(
     value: &str,
@@ -828,12 +799,10 @@ fn resolve_line_height_value(
 fn parse_color(s: &str) -> Option<[f32; 4]> {
     let t = s.trim().to_lowercase();
 
-    // transparent
     if t == "transparent" {
         return Some(color::TRANSPARENT);
     }
 
-    // #rgb / #rrggbb
     if let Some(hex) = t.strip_prefix('#') {
         if hex.len() == 3 {
             let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()? as f32 / color::CHANNEL_MAX;
@@ -849,7 +818,6 @@ fn parse_color(s: &str) -> Option<[f32; 4]> {
         }
     }
 
-    // rgb(r,g,b) / rgba(r,g,b,a)
     if t.starts_with("rgb(") || t.starts_with("rgba(") {
         let inside = t
             .trim_start_matches("rgba(")
@@ -871,7 +839,6 @@ fn parse_color(s: &str) -> Option<[f32; 4]> {
         return Some([r, g, b, a]);
     }
 
-    // named colors（最小）
     match t.as_str() {
         "black" => Some(color::BLACK),
         "white" => Some(color::WHITE),

@@ -31,10 +31,6 @@ use crate::gpu::GPU;
 use crate::constants::{browser, http_status};
 use crate::utility::url_utils::{normalize_against, normalized_key_against, url_to_abs_string};
 
-// ------------------------------------------------------------
-// HTML/CSS 抽出
-// ------------------------------------------------------------
-
 fn extract_style_text(node: &dom::Node, out: &mut String) {
     match &node.node_type {
         dom::NodeType::Element(ed) => {
@@ -124,10 +120,6 @@ fn extract_import_url(line: &str) -> Option<String> {
     }
 }
 
-// ------------------------------------------------------------
-// URL 正規化（main.rs では “resolve だけ” にして、文字列化は url_utils に任せる）
-// ------------------------------------------------------------
-
 fn expand_css_imports(
     base_url: &url::URL,
     css_text: &str,
@@ -185,10 +177,6 @@ fn expand_css_imports(
     out
 }
 
-// ------------------------------------------------------------
-// hit test / scroll / hover
-// ------------------------------------------------------------
-
 fn hit_test_link(display_list: &[DisplayItem], x: f32, y: f32, scroll_y: f32) -> Option<String> {
     let doc_y = y + scroll_y;
 
@@ -240,10 +228,7 @@ fn apply_hover(display_list: &mut [DisplayItem], hovered: Option<&str>) {
                 }
             }
             DisplayItem::Image(_) => {}
-            DisplayItem::Border(_) => {
-                // 今のところ hover では何もしない
-                // （必要になったら DrawBorder に base_color を持たせてここで暗くする）
-            }
+            DisplayItem::Border(_) => {}
         }
     }
 }
@@ -252,14 +237,10 @@ fn darker(c: [f32; 4], factor: f32) -> [f32; 4] {
     [c[0] * factor, c[1] * factor, c[2] * factor, c[3]]
 }
 
-// ------------------------------------------------------------
-// 画像 natural size cache（base_url を持つ）
-// ------------------------------------------------------------
-
 #[derive(Clone)]
 struct ImageCache {
     base_url: url::URL,
-    sizes: HashMap<String, (u32, u32)>, // key: 正規化済み「絶対URL文字列」
+    sizes: HashMap<String, (u32, u32)>,
 }
 
 impl ImageCache {
@@ -296,7 +277,6 @@ struct PageDocument {
     img_cache: ImageCache,
 }
 
-// --- DOM から <img src="..."> を集める ---
 fn extract_img_srcs(node: &dom::Node, out: &mut Vec<String>) {
     match &node.node_type {
         dom::NodeType::Element(ed) => {
@@ -316,10 +296,6 @@ fn extract_img_srcs(node: &dom::Node, out: &mut Vec<String>) {
         _ => node.children.iter().for_each(|c| extract_img_srcs(c, out)),
     }
 }
-
-// ------------------------------------------------------------
-// ページ構築
-// ------------------------------------------------------------
 
 fn fetch_page_document(url: &url::URL) -> Option<PageDocument> {
     let response = crate::http::request_allow_error(&url);
@@ -341,20 +317,17 @@ fn fetch_page_document(url: &url::URL) -> Option<PageDocument> {
     let dom_root = html::parse(html_text);
     println!("DOM生成完了");
 
-    // 1) 画像の自然サイズ cache（正規化 key 統一）
     let mut img_cache = ImageCache::new(url.clone());
     {
         let mut srcs = Vec::new();
         extract_img_srcs(&dom_root, &mut srcs);
 
-        // Rustっぽく：iterator + insert の戻り値で重複排除（setを使うのもOK）
         let mut seen = HashSet::new();
         for src in srcs {
             let Some(key) = normalized_key_against(url, &src) else {
                 continue;
             };
 
-            // insert が true のときだけ初登場（重複排除）
             if !seen.insert(key.clone()) {
                 continue;
             }
@@ -365,7 +338,6 @@ fn fetch_page_document(url: &url::URL) -> Option<PageDocument> {
         }
     }
 
-    // 2) CSS（UA + inline + link + @import）
     let mut css_text = String::from(browser::UA_CSS);
     css_text.push('\n');
     extract_style_text(&dom_root, &mut css_text);
@@ -401,7 +373,7 @@ fn fetch_page_document(url: &url::URL) -> Option<PageDocument> {
         css_text.push_str("\n/* ---- external stylesheet ---- */\n");
 
         let mut visited = HashSet::new();
-        visited.insert(url_to_abs_string(&css_url)); // visitedも正規化
+        visited.insert(url_to_abs_string(&css_url));
 
         css_text.push_str(&expand_css_imports(
             &css_url,
@@ -412,7 +384,6 @@ fn fetch_page_document(url: &url::URL) -> Option<PageDocument> {
         css_text.push('\n');
     }
 
-    // 最後に全体も @import 展開
     {
         let mut visited = HashSet::new();
         visited.insert(url_to_abs_string(url));
@@ -421,7 +392,6 @@ fn fetch_page_document(url: &url::URL) -> Option<PageDocument> {
 
     println!("CSS total: {} bytes", css_text.len());
 
-    // 3) style/layout/display
     let stylesheet = css::Parser::new(css_text).parse_stylesheet();
     let styled_root = style::style_tree(dom_root, &stylesheet);
 
@@ -456,10 +426,6 @@ fn build_display_list_for_viewport(
 fn load_layout_font() -> fontdue::Font {
     crate::font::load_default_ui_font()
 }
-
-// ------------------------------------------------------------
-// state / main loop
-// ------------------------------------------------------------
 
 struct BrowserState {
     url: url::URL,

@@ -9,7 +9,7 @@ use crate::utility::url_utils::url_to_abs_string;
 #[derive(Debug, Clone)]
 pub enum DisplayItem {
     Rect(DrawRect),
-    Border(DrawBorder), // ★ 追加: 枠線専用
+    Border(DrawBorder),
     Text(DrawText),
     Image(DrawImage),
 }
@@ -24,8 +24,8 @@ pub struct DrawRect {
     pub radius: CornerRadii,
 
     pub color: [f32; 4],
-    pub base_color: [f32; 4], // hover解除で戻す用
-    pub href: Option<String>, // 下線だけリンクに紐付ける（背景はNone）
+    pub base_color: [f32; 4],
+    pub href: Option<String>,
     pub link_id: Option<usize>,
     pub fixed: bool,
 }
@@ -38,7 +38,7 @@ pub struct DrawBorder {
     pub h: f32,
 
     pub radius: CornerRadii,
-    pub border_width: f32, // とりあえず単一値
+    pub border_width: f32,
 
     pub color: [f32; 4],
     pub href: Option<String>,
@@ -76,7 +76,6 @@ pub struct DrawImage {
     pub fixed: bool,
 }
 
-/// base_url を受け取って、画像 src を正規化できるようにする
 pub fn build_display_list(
     root: &LayoutBox<'_>,
     out: &mut Vec<DisplayItem>,
@@ -114,13 +113,9 @@ fn paint_node_contents(
         paint_inline_element_fragments(node, out, fixed);
     }
 
-    // --------------------------------------------------------
-    // BlockNode の背景 + border（border-radius 対応）
-    // --------------------------------------------------------
     if matches!(node.box_type, BoxType::BlockNode(_)) || is_inline_block_box(node) {
         let d = &node.dimensions;
 
-        // ★ border-box の矩形を計算
         let border_box = crate::layout::Rect {
             x: d.content.x - d.padding.left - d.border.left,
             y: d.content.y - d.padding.top - d.border.top,
@@ -142,7 +137,6 @@ fn paint_node_contents(
                     .border_radius
                     .normalize(border_box.width, border_box.height);
 
-                // 背景（background-color は border-box まで塗る）
                 if let Some(bg) = sn.background_color() {
                     out.push(DisplayItem::Rect(DrawRect {
                         x: border_box.x,
@@ -158,7 +152,6 @@ fn paint_node_contents(
                     }));
                 }
 
-                // border（とりあえず四辺同じ太さ前提で max を使う）
                 let border_width = d
                     .border
                     .left
@@ -184,7 +177,6 @@ fn paint_node_contents(
             }
         }
 
-        // li の bullet
         if let Some(sn) = node.get_style_node() {
             if let crate::dom::NodeType::Element(ed) = &sn.node.node_type {
                 if ed.tag_name == "li" {
@@ -221,7 +213,6 @@ fn paint_node_contents(
         }
     }
 
-    // Text：InlineNode の Text ノードだけ描く
     if let Some(sn) = node.get_style_node() {
         if matches!(node.box_type, BoxType::InlineNode(_)) {
             if let crate::dom::NodeType::Text(t) = &sn.node.node_type {
@@ -314,7 +305,6 @@ fn paint_node_contents(
         }
     }
 
-    // img を描画アイテムにする
     if let Some(sn) = node.get_style_node() {
         if let crate::dom::NodeType::Element(ed) = &sn.node.node_type {
             if ed.tag_name == "img" {
@@ -328,27 +318,22 @@ fn paint_node_contents(
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty());
 
-                // サイズが無いなら描かない（layout問題）
                 if c.width <= 0.0 || c.height <= 0.0 {
-                    // 「最低限」なら何もしない
                 } else if src_raw.is_empty() {
-                    // src が無い/空 → alt だけ出す
                     if let Some(alt_text) = alt {
                         push_alt_text(out, sn, c, alt_text, fixed);
                     }
                 } else {
-                    // src を base_url で解決して、正規化キーを作る
                     let abs = base_url.resolve_location(src_raw);
                     let key = url_to_abs_string(&abs);
 
-                    // 画像ロード可否を軽くチェック（失敗なら alt）
                     if crate::image_loader::can_load_image(&key) {
                         out.push(DisplayItem::Image(DrawImage {
                             x: c.x,
                             y: c.y,
                             w: c.width,
                             h: c.height,
-                            src: key.clone(), // ★src と key を統一
+                            src: key.clone(),
                             key,
                             alt,
                             href: sn.link_href.clone(),
@@ -357,9 +342,6 @@ fn paint_node_contents(
                         }));
                     } else if let Some(alt_text) = alt {
                         push_alt_text(out, sn, c, alt_text, fixed);
-                    } else {
-                        // alt すら無いなら最低限 "[image]" を出してもいい
-                        // push_alt_text(out, sn, c, "[image]".to_string(), fixed);
                     }
                 }
             }
@@ -1154,10 +1136,6 @@ mod tests {
         assert_eq!(world_size, Some(10.0));
     }
 }
-
-// ---------------------------
-// CSS helpers（最低限）
-// ---------------------------
 
 fn font_size_px(sn: &crate::style::StyledNode) -> Option<f32> {
     Some(sn.font_size_px())
