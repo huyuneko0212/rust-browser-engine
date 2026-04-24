@@ -323,9 +323,43 @@ impl Parser {
     fn expand_declaration(&self, name: String, value: String) -> Vec<Declaration> {
         if name.eq_ignore_ascii_case("border") {
             self.expand_border_shorthand(value)
+        } else if name.eq_ignore_ascii_case("list-style") {
+            self.expand_list_style_shorthand(value)
         } else {
             vec![Declaration { name, value }]
         }
+    }
+
+    fn expand_list_style_shorthand(&self, value: String) -> Vec<Declaration> {
+        let mut decls = Vec::new();
+
+        for token in value.split_whitespace() {
+            let token = token.trim();
+            if token.is_empty() {
+                continue;
+            }
+
+            if is_list_style_type_token(token) {
+                decls.push(Declaration {
+                    name: "list-style-type".to_string(),
+                    value: token.to_ascii_lowercase(),
+                });
+            } else if matches!(token.to_ascii_lowercase().as_str(), "inside" | "outside") {
+                decls.push(Declaration {
+                    name: "list-style-position".to_string(),
+                    value: token.to_ascii_lowercase(),
+                });
+            }
+        }
+
+        if decls.is_empty() {
+            decls.push(Declaration {
+                name: "list-style".to_string(),
+                value,
+            });
+        }
+
+        decls
     }
 
     fn expand_border_shorthand(&self, value: String) -> Vec<Declaration> {
@@ -368,6 +402,13 @@ impl Parser {
     }
 }
 
+fn is_list_style_type_token(token: &str) -> bool {
+    matches!(
+        token.to_ascii_lowercase().as_str(),
+        "none" | "disc" | "circle" | "square" | "decimal"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,6 +426,18 @@ mod tests {
         }));
         assert!(declarations.iter().any(|declaration| {
             declaration.name == "border-color" && declaration.value == "#c96b00"
+        }));
+    }
+
+    #[test]
+    fn list_style_shorthand_expands_type_and_position() {
+        let declarations = parse_inline_declarations("list-style: none inside;");
+
+        assert!(declarations.iter().any(|declaration| {
+            declaration.name == "list-style-type" && declaration.value == "none"
+        }));
+        assert!(declarations.iter().any(|declaration| {
+            declaration.name == "list-style-position" && declaration.value == "inside"
         }));
     }
 }

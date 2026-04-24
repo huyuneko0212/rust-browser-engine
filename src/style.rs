@@ -98,6 +98,15 @@ pub enum ZIndex {
     Integer(i32),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListStyleType {
+    Disc,
+    Circle,
+    Square,
+    Decimal,
+    None,
+}
+
 impl ZIndex {
     pub fn stack_level(self) -> Option<i32> {
         match self {
@@ -261,6 +270,47 @@ impl StyledNode {
         }
         None
     }
+
+    pub fn list_style_type(&self) -> ListStyleType {
+        let value = self
+            .value("list-style-type")
+            .or_else(|| self.value("list-style"))
+            .map(|s| s.trim().to_ascii_lowercase());
+
+        match value.as_deref() {
+            Some("none") => ListStyleType::None,
+            Some("circle") => ListStyleType::Circle,
+            Some("square") => ListStyleType::Square,
+            Some("decimal") => ListStyleType::Decimal,
+            _ => ListStyleType::Disc,
+        }
+    }
+
+    pub fn list_marker_size_px(&self) -> Option<f32> {
+        self.value("list-marker-size")
+            .or_else(|| self.value("-rust-list-marker-size"))
+            .and_then(|value| {
+                self.resolve_length_px(
+                    value,
+                    self.computed_font_size_px,
+                    0.0,
+                    layout_constants::DEFAULT_VIEWPORT_HEIGHT_PX,
+                )
+            })
+    }
+
+    pub fn list_marker_offset_px(&self) -> Option<f32> {
+        self.value("list-marker-offset")
+            .or_else(|| self.value("-rust-list-marker-offset"))
+            .and_then(|value| {
+                self.resolve_length_px(
+                    value,
+                    self.computed_font_size_px,
+                    0.0,
+                    layout_constants::DEFAULT_VIEWPORT_HEIGHT_PX,
+                )
+            })
+    }
 }
 
 /// そもそも表示しない (display: none相当)
@@ -330,6 +380,12 @@ const INHERITABLE_PROPS: &[&str] = &[
     "font-weight",
     "line-height",
     "text-decoration",
+    "list-style-type",
+    "list-style-position",
+    "list-marker-size",
+    "list-marker-offset",
+    "-rust-list-marker-size",
+    "-rust-list-marker-offset",
 ];
 
 fn is_inheritable_prop(name: &str) -> bool {

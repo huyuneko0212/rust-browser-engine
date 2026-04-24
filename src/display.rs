@@ -1,6 +1,6 @@
 use crate::constants::{color, display as display_constants, layout as layout_constants};
 use crate::layout::{BoxType, CornerRadii, LayoutBox};
-use crate::style::{Display, FormSubmit, Position};
+use crate::style::{Display, FormSubmit, ListStyleType, Position};
 use fontdue::Font;
 use std::cmp::Ordering;
 
@@ -188,10 +188,19 @@ fn paint_node_contents(
 
                     let font_size =
                         font_size_px(sn).unwrap_or(layout_constants::DEFAULT_FONT_SIZE_PX);
+                    let Some(marker) = list_marker_text(sn.list_style_type()) else {
+                        return;
+                    };
+                    let marker_size = sn
+                        .list_marker_size_px()
+                        .unwrap_or(font_size * display_constants::LIST_MARKER_SIZE_EM);
+                    let marker_offset = sn
+                        .list_marker_offset_px()
+                        .unwrap_or(font_size * display_constants::LIST_MARKER_OFFSET_EM);
                     let line_h = line_height_px(sn, font_size);
 
-                    let bx = c.x - (font_size * display_constants::LIST_MARKER_OFFSET_EM);
-                    let by = c.y + font_size;
+                    let bx = c.x - marker_offset;
+                    let by = c.y + ((line_h - marker_size).max(0.0) / 2.0) + marker_size;
 
                     let color = sn.color().unwrap_or(color::DEFAULT_TEXT);
                     let base_color = color;
@@ -199,8 +208,8 @@ fn paint_node_contents(
                     out.push(DisplayItem::Text(DrawText {
                         x: bx,
                         y: by,
-                        text: "•".to_string(),
-                        size_px: font_size,
+                        text: marker.to_string(),
+                        size_px: marker_size,
                         color,
                         base_color,
                         href: None,
@@ -209,7 +218,7 @@ fn paint_node_contents(
                         hit: crate::layout::Rect {
                             x: bx,
                             y: c.y,
-                            width: font_size,
+                            width: marker_size,
                             height: line_h,
                         },
                         fixed,
@@ -1154,6 +1163,70 @@ mod tests {
     }
 
     #[test]
+    fn list_style_none_suppresses_li_marker() {
+        let items = display_list_for(
+            r#"<ul><li>Yahoo style item</li></ul>"#,
+            r#"
+            ul {
+                list-style: none;
+                margin: 0;
+                padding: 0;
+            }
+            li {
+                display: block;
+                margin: 0;
+                padding: 0;
+            }
+            "#,
+        );
+
+        assert!(
+            !items
+                .iter()
+                .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "•"))
+        );
+    }
+
+    #[test]
+    fn li_marker_size_and_offset_are_style_adjustable() {
+        let items = display_list_for(
+            r#"<ul><li>Item</li></ul>"#,
+            r#"
+            ul {
+                margin: 0 0 0 24px;
+                padding: 0;
+            }
+            li {
+                display: block;
+                margin: 0;
+                padding: 0;
+                font-size: 20px;
+                list-marker-size: 8px;
+                list-marker-offset: 12px;
+            }
+            "#,
+        );
+
+        let marker = items
+            .iter()
+            .find_map(|item| match item {
+                DisplayItem::Text(text) if text.text == "•" => Some(text),
+                _ => None,
+            })
+            .expect("li marker should be painted");
+        let item = items
+            .iter()
+            .find_map(|item| match item {
+                DisplayItem::Text(text) if text.text == "Item" => Some(text),
+                _ => None,
+            })
+            .expect("li text should be painted");
+
+        assert_eq!(marker.size_px, 8.0);
+        assert!((item.x - marker.x - 12.0).abs() <= 0.5);
+    }
+
+    #[test]
     fn input_value_is_painted_as_text() {
         let items = display_list_for(
             r#"<p>Name <input value="Ferris" placeholder="name"></p>"#,
@@ -1344,6 +1417,16 @@ fn text_decoration_none(sn: &crate::style::StyledNode) -> bool {
     sn.value("text-decoration")
         .map(|v| v.to_lowercase().split_whitespace().any(|x| x == "none"))
         .unwrap_or(false)
+}
+
+fn list_marker_text(style_type: ListStyleType) -> Option<&'static str> {
+    match style_type {
+        ListStyleType::Disc => Some("•"),
+        ListStyleType::Circle => Some("◦"),
+        ListStyleType::Square => Some("▪"),
+        ListStyleType::Decimal => Some("1."),
+        ListStyleType::None => None,
+    }
 }
 
 fn collapse_whitespace(s: &str) -> String {
