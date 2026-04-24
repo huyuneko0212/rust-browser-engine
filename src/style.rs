@@ -288,6 +288,7 @@ struct Ancestor {
     tag: String,
     id: Option<String>,
     classes: Vec<String>,
+    attributes: HashMap<String, String>,
 }
 
 fn ancestor_of(e: &ElementData) -> Ancestor {
@@ -295,6 +296,7 @@ fn ancestor_of(e: &ElementData) -> Ancestor {
         tag: e.tag_name.clone(),
         id: e.id().map(|s| s.to_string()),
         classes: e.classes().iter().map(|s| s.to_string()).collect(),
+        attributes: e.attributes.clone(),
     }
 }
 
@@ -565,7 +567,7 @@ fn parse_selector_parts(selector: &str) -> Option<Vec<SelectorPart<'_>>> {
             if ch.is_whitespace() || ch == '>' {
                 break;
             }
-            if matches!(ch, '+' | '[' | ':' | '~') {
+            if matches!(ch, '+' | ':' | '~') {
                 return None;
             }
             pos += ch.len_utf8();
@@ -660,6 +662,20 @@ fn selector_matches_simple_elem(elem: &ElementData, selector: &str) -> bool {
         return false;
     }
 
+    if let Some((base, attr)) = split_attribute_selector(s) {
+        return selector_base_matches_elem(elem, base)
+            && attribute_selector_matches(&elem.attributes, attr);
+    }
+
+    selector_base_matches_elem(elem, s)
+}
+
+fn selector_base_matches_elem(elem: &ElementData, selector: &str) -> bool {
+    let s = selector.trim();
+    if s.is_empty() {
+        return true;
+    }
+
     if let Some(id) = s.strip_prefix('#') {
         return elem.id() == Some(id);
     }
@@ -684,6 +700,20 @@ fn selector_matches_simple_ancestor(a: &Ancestor, selector: &str) -> bool {
         return false;
     }
 
+    if let Some((base, attr)) = split_attribute_selector(s) {
+        return selector_base_matches_ancestor(a, base)
+            && attribute_selector_matches(&a.attributes, attr);
+    }
+
+    selector_base_matches_ancestor(a, s)
+}
+
+fn selector_base_matches_ancestor(a: &Ancestor, selector: &str) -> bool {
+    let s = selector.trim();
+    if s.is_empty() {
+        return true;
+    }
+
     if let Some(id) = s.strip_prefix('#') {
         return a.id.as_deref() == Some(id);
     }
@@ -700,6 +730,46 @@ fn selector_matches_simple_ancestor(a: &Ancestor, selector: &str) -> bool {
     }
 
     a.tag == s
+}
+
+fn split_attribute_selector(selector: &str) -> Option<(&str, &str)> {
+    let start = selector.find('[')?;
+    if !selector.ends_with(']') || start >= selector.len() - 2 {
+        return None;
+    }
+
+    let base = selector[..start].trim();
+    let attr = selector[start + 1..selector.len() - 1].trim();
+    if attr.is_empty() || attr.contains('[') || attr.contains(']') {
+        return None;
+    }
+
+    Some((base, attr))
+}
+
+fn attribute_selector_matches(attributes: &HashMap<String, String>, selector: &str) -> bool {
+    if let Some((name, value)) = selector.split_once('=') {
+        let name = name.trim();
+        let expected = unquote_attr_value(value.trim());
+        return attributes
+            .get(name)
+            .map(|actual| actual.trim().eq_ignore_ascii_case(expected))
+            .unwrap_or(false);
+    }
+
+    attributes.contains_key(selector.trim())
+}
+
+fn unquote_attr_value(value: &str) -> &str {
+    value
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .or_else(|| {
+            value
+                .strip_prefix('\'')
+                .and_then(|v| v.strip_suffix('\''))
+        })
+        .unwrap_or(value)
 }
 
 fn selector_specificity_if_matches(
@@ -728,6 +798,25 @@ fn selector_specificity_if_matches(
 
 fn specificity_of_simple(s: &str) -> Specificity {
     let s = s.trim();
+    if s.is_empty() {
+        return Specificity(0, 0, 0);
+    }
+
+    let (base, attr_count) = if let Some((base, _attr)) = split_attribute_selector(s) {
+        (base.trim(), 1)
+    } else {
+        (s, 0)
+    };
+
+    let base_specificity = specificity_of_simple_base(base);
+    Specificity(
+        base_specificity.0,
+        base_specificity.1 + attr_count,
+        base_specificity.2,
+    )
+}
+
+fn specificity_of_simple_base(s: &str) -> Specificity {
     if s.is_empty() {
         return Specificity(0, 0, 0);
     }
@@ -993,6 +1082,40 @@ mod tests {
             Some("red")
         );
         assert_eq!(nested.value("color").map(|value| value.as_str()), None);
+    }
+
+    #[test]
+    fn attribute_selector_matches_element_attributes() {
+        let dom = crate::html::parse(
+            r#"
+            <form>
+                <input id="submit" type="submit" value="Search">
+                <input id="text" type="text" value="Search">
+            </form>
+            "#
+            .to_string(),
+        );
+        let stylesheet = crate::css::Parser::new(
+            r#"
+            input { background: #ffffff; }
+            input[type=submit] { background: #f3f3f3; }
+            "#
+            .to_string(),
+        )
+        .parse_stylesheet();
+
+        let styled = style_tree(dom, &stylesheet);
+        let submit = find_element_by_id(&styled, "submit").expect("submit input should exist");
+        let text = find_element_by_id(&styled, "text").expect("text input should exist");
+
+        assert_eq!(
+            submit.value("background").map(|value| value.as_str()),
+            Some("#f3f3f3")
+        );
+        assert_eq!(
+            text.value("background").map(|value| value.as_str()),
+            Some("#ffffff")
+        );
     }
 
     #[test]

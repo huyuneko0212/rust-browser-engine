@@ -35,6 +35,26 @@ input {
   font-size: 16px;
   line-height: 1.2;
 }
+
+input[type=button],
+input[type=submit],
+input[type=reset] {
+  padding: 2px 8px;
+  border: 1px solid #8f8f8f;
+  background: #f3f3f3;
+}
+
+button {
+  display: inline-block;
+  margin: 0 2px;
+  padding: 2px 8px;
+  border: 1px solid #8f8f8f;
+  border-radius: 2px;
+  background: #f3f3f3;
+  color: #111111;
+  font-size: 16px;
+  line-height: 1.2;
+}
 "#;
 }
 

@@ -1171,6 +1171,58 @@ mod tests {
             .iter()
             .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "secret")));
     }
+
+    #[test]
+    fn submit_input_uses_button_ua_box() {
+        let items = display_list_for(
+            r#"<p><input type="submit" value="Google Search"></p>"#,
+            r#"
+            p { display: block; width: 320px; margin: 0; padding: 0; }
+            input {
+                display: inline-block;
+                padding: 2px 4px;
+                border: 1px solid #9aa0a6;
+                background: #ffffff;
+            }
+            input[type=submit] {
+                padding: 2px 8px;
+                border: 1px solid #8f8f8f;
+                background: #f3f3f3;
+            }
+            "#,
+        );
+
+        assert!(items
+            .iter()
+            .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "Google Search")));
+        assert_eq!(rect_count(&items, [0.9529412, 0.9529412, 0.9529412, 1.0]), 1);
+        assert_eq!(border_count(&items, [0.56078434, 0.56078434, 0.56078434, 1.0]), 1);
+    }
+
+    #[test]
+    fn button_paints_ua_box_and_child_text() {
+        let items = display_list_for(
+            r#"<p>Before <button>Click me</button> After</p>"#,
+            r#"
+            p { display: block; width: 320px; margin: 0; padding: 0; }
+            button {
+                display: inline-block;
+                padding: 2px 8px;
+                border: 1px solid #8f8f8f;
+                background: #f3f3f3;
+            }
+            "#,
+        );
+
+        assert!(items
+            .iter()
+            .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "Click")));
+        assert!(items
+            .iter()
+            .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "me")));
+        assert_eq!(rect_count(&items, [0.9529412, 0.9529412, 0.9529412, 1.0]), 1);
+        assert_eq!(border_count(&items, [0.56078434, 0.56078434, 0.56078434, 1.0]), 1);
+    }
 }
 
 fn font_size_px(sn: &crate::style::StyledNode) -> Option<f32> {
