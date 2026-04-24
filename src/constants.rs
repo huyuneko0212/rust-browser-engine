@@ -23,6 +23,18 @@ ul, ol { display: block; margin: 10px 0 10px 18px; padding: 0; }
 li { display: block; margin: 4px 0; }
 
 small { font-size: 12px; }
+
+input {
+  display: inline-block;
+  margin: 0 2px;
+  padding: 2px 4px;
+  border: 1px solid #9aa0a6;
+  border-radius: 2px;
+  background: #ffffff;
+  color: #111111;
+  font-size: 16px;
+  line-height: 1.2;
+}
 "#;
 }
 
@@ -75,6 +87,8 @@ pub mod layout {
     pub const DEFAULT_VIEWPORT_HEIGHT_PX: f32 = 600.0;
     pub const DEFAULT_IMAGE_WIDTH_PX: f32 = 300.0;
     pub const DEFAULT_IMAGE_HEIGHT_PX: f32 = 150.0;
+    pub const DEFAULT_INPUT_CHARS: usize = 20;
+    pub const INPUT_CHAR_WIDTH_EM: f32 = 0.55;
     pub const PERCENT_DENOMINATOR: f32 = 100.0;
 }
 

@@ -340,6 +340,8 @@ fn paint_node_contents(
                         push_alt_text(out, sn, c, alt_text, fixed);
                     }
                 }
+            } else if ed.tag_name == "input" {
+                paint_input_control(out, sn, ed, &node.dimensions.content, fixed);
             }
         }
     }
@@ -1131,6 +1133,44 @@ mod tests {
         assert_eq!(hello_size, Some(30.0));
         assert_eq!(world_size, Some(10.0));
     }
+
+    #[test]
+    fn input_value_is_painted_as_text() {
+        let items = display_list_for(
+            r#"<p>Name <input value="Ferris" placeholder="name"></p>"#,
+            r#"
+            p { display: block; width: 320px; margin: 0; padding: 0; }
+            input {
+                display: inline-block;
+                padding: 2px 4px;
+                border: 1px solid #999;
+                background: #fff;
+            }
+            "#,
+        );
+
+        assert!(items
+            .iter()
+            .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "Ferris")));
+    }
+
+    #[test]
+    fn password_input_masks_value() {
+        let items = display_list_for(
+            r#"<p><input type="password" value="secret"></p>"#,
+            r#"
+            p { display: block; width: 320px; margin: 0; padding: 0; }
+            input { display: inline-block; padding: 2px 4px; border: 1px solid #999; }
+            "#,
+        );
+
+        assert!(items
+            .iter()
+            .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "******")));
+        assert!(!items
+            .iter()
+            .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "secret")));
+    }
 }
 
 fn font_size_px(sn: &crate::style::StyledNode) -> Option<f32> {
@@ -1276,4 +1316,107 @@ fn push_alt_text(
         hit: c.clone(),
         fixed,
     }));
+}
+
+fn paint_input_control(
+    out: &mut Vec<DisplayItem>,
+    sn: &crate::style::StyledNode,
+    ed: &crate::dom::ElementData,
+    c: &crate::layout::Rect,
+    fixed: bool,
+) {
+    if c.width <= 0.0 || c.height <= 0.0 {
+        return;
+    }
+
+    let input_type = input_type(ed);
+    if matches!(input_type.as_str(), "checkbox" | "radio") {
+        if ed.attributes.contains_key("checked") {
+            push_input_text(out, sn, c, "x".to_string(), color::DEFAULT_TEXT, fixed);
+        }
+        return;
+    }
+
+    let (text, text_color) = input_text_and_color(sn, ed, &input_type);
+    if text.is_empty() {
+        return;
+    }
+
+    push_input_text(out, sn, c, text, text_color, fixed);
+}
+
+fn push_input_text(
+    out: &mut Vec<DisplayItem>,
+    sn: &crate::style::StyledNode,
+    c: &crate::layout::Rect,
+    text: String,
+    color: [f32; 4],
+    fixed: bool,
+) {
+    let font_size = font_size_px(sn).unwrap_or(layout_constants::DEFAULT_FONT_SIZE_PX);
+    let line_h = line_height_px(sn, font_size);
+    let baseline_y = c.y + ((c.height - line_h).max(0.0) / 2.0) + font_size;
+
+    out.push(DisplayItem::Text(DrawText {
+        x: c.x,
+        y: baseline_y,
+        text,
+        size_px: font_size,
+        color,
+        base_color: color,
+        href: sn.link_href.clone(),
+        hit: c.clone(),
+        fixed,
+    }));
+}
+
+fn input_text_and_color(
+    sn: &crate::style::StyledNode,
+    ed: &crate::dom::ElementData,
+    input_type: &str,
+) -> (String, [f32; 4]) {
+    let color = sn.color().unwrap_or(color::DEFAULT_TEXT);
+
+    if matches!(input_type, "button" | "submit" | "reset") {
+        return (input_button_label(ed, input_type), color);
+    }
+
+    if let Some(value) = ed.attributes.get("value") {
+        if input_type == "password" {
+            return ("*".repeat(value.chars().count()), color);
+        }
+        return (collapse_whitespace(value).trim().to_string(), color);
+    }
+
+    let placeholder = ed
+        .attributes
+        .get("placeholder")
+        .map(|value| collapse_whitespace(value).trim().to_string())
+        .unwrap_or_default();
+
+    if placeholder.is_empty() {
+        (String::new(), color)
+    } else {
+        (placeholder, [0.45, 0.45, 0.48, 1.0])
+    }
+}
+
+fn input_button_label(ed: &crate::dom::ElementData, input_type: &str) -> String {
+    if let Some(value) = ed.attributes.get("value") {
+        return collapse_whitespace(value).trim().to_string();
+    }
+
+    match input_type {
+        "submit" => "Submit".to_string(),
+        "reset" => "Reset".to_string(),
+        _ => String::new(),
+    }
+}
+
+fn input_type(ed: &crate::dom::ElementData) -> String {
+    ed.attributes
+        .get("type")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "text".to_string())
 }

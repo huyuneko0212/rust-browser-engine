@@ -851,6 +851,10 @@ impl<'a> LayoutBox<'a> {
                     let (w, h) = img_intrinsic_size_px(sn, img_cache);
                     (fs, lh, None, Some((w, h)))
                 }
+                crate::dom::NodeType::Element(ed) if ed.tag_name == "input" => {
+                    let (w, h) = input_intrinsic_size_px(sn);
+                    (fs, lh, None, Some((w, h)))
+                }
                 _ => (fs, lh, None, None),
             }
         } else {
@@ -1537,6 +1541,9 @@ impl<'a> LayoutBox<'a> {
                     if ed.tag_name == "img" {
                         let (_iw, ih) = img_intrinsic_size_px(sn, img_cache);
                         resolved_height = ih.max(layout_constants::MIN_LAYOUT_SIZE_PX);
+                    } else if ed.tag_name == "input" {
+                        let (_iw, ih) = input_intrinsic_size_px(sn);
+                        resolved_height = ih.max(layout_constants::MIN_LAYOUT_SIZE_PX);
                     } else {
                         let mut buf = String::new();
                         collect_text_nodes(sn, &mut buf);
@@ -1688,6 +1695,10 @@ impl<'a> LayoutBox<'a> {
                             }
                             crate::dom::NodeType::Element(ed) if ed.tag_name == "img" => {
                                 let (w, h) = img_intrinsic_size_px(sn, img_cache);
+                                (false, None, fs, lh, Some((w, h)))
+                            }
+                            crate::dom::NodeType::Element(ed) if ed.tag_name == "input" => {
+                                let (w, h) = input_intrinsic_size_px(sn);
                                 (false, None, fs, lh, Some((w, h)))
                             }
                             _ => (false, None, fs, lh, None),
@@ -2712,6 +2723,70 @@ fn img_intrinsic_size_px(
     )
 }
 
+fn input_intrinsic_size_px(sn: &crate::style::StyledNode) -> (f32, f32) {
+    let font_size = font_size_px(sn).unwrap_or(layout_constants::DEFAULT_FONT_SIZE_PX);
+    let line_h = line_height_px(sn, font_size);
+    let css_w = sn
+        .value("width")
+        .and_then(|v| sn.resolve_length_px(v, 0.0, 0.0, 0.0));
+    let css_h = sn
+        .value("height")
+        .and_then(|v| sn.resolve_length_px(v, 0.0, 0.0, 0.0));
+
+    let (kind, attr_size, label_len) = if let crate::dom::NodeType::Element(ed) = &sn.node.node_type
+    {
+        (
+            input_type(ed),
+            ed.attributes
+                .get("size")
+                .and_then(|s| s.trim().parse::<usize>().ok())
+                .filter(|size| *size > 0),
+            input_label(ed).chars().count(),
+        )
+    } else {
+        ("text".to_string(), None, 0)
+    };
+
+    let default_h = line_h.max(layout_constants::MIN_LINE_HEIGHT_PX);
+    let default_w = if matches!(kind.as_str(), "checkbox" | "radio") {
+        default_h
+    } else if matches!(kind.as_str(), "button" | "submit" | "reset") {
+        (label_len.max(4) as f32) * font_size * layout_constants::INPUT_CHAR_WIDTH_EM
+    } else {
+        let char_count = attr_size.unwrap_or(layout_constants::DEFAULT_INPUT_CHARS) as f32;
+        char_count * font_size * layout_constants::INPUT_CHAR_WIDTH_EM
+    };
+
+    (
+        css_w
+            .unwrap_or(default_w)
+            .max(layout_constants::MIN_LAYOUT_SIZE_PX),
+        css_h
+            .unwrap_or(default_h)
+            .max(layout_constants::MIN_LAYOUT_SIZE_PX),
+    )
+}
+
+fn input_type(ed: &crate::dom::ElementData) -> String {
+    ed.attributes
+        .get("type")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "text".to_string())
+}
+
+fn input_label(ed: &crate::dom::ElementData) -> String {
+    if let Some(value) = ed.attributes.get("value") {
+        return value.clone();
+    }
+
+    match input_type(ed).as_str() {
+        "submit" => "Submit".to_string(),
+        "reset" => "Reset".to_string(),
+        _ => String::new(),
+    }
+}
+
 fn collect_text_nodes(sn: &StyledNode, out: &mut String) {
     match &sn.node.node_type {
         crate::dom::NodeType::Text(t) => {
@@ -2798,6 +2873,9 @@ fn estimate_layout_box_content_width(
             }
             crate::dom::NodeType::Element(ed) if ed.tag_name == "img" => {
                 img_intrinsic_size_px(sn, img_cache).0.max(0.0)
+            }
+            crate::dom::NodeType::Element(ed) if ed.tag_name == "input" => {
+                input_intrinsic_size_px(sn).0.max(0.0)
             }
             _ if node.is_inline_block_box() || matches!(node.box_type, BoxType::BlockNode(_)) => {
                 estimate_block_children_outer_width(

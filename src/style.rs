@@ -140,6 +140,12 @@ impl StyledNode {
             return Display::Inline;
         }
 
+        if let NodeType::Element(ref e) = self.node.node_type {
+            if is_hidden_input(e) {
+                return Display::None;
+            }
+        }
+
         if let Some(v) = self.value("display").map(|s| s.trim()) {
             return match v {
                 "block" => Display::Block,
@@ -238,6 +244,15 @@ impl StyledNode {
 /// そもそも表示しない (display: none相当)
 fn is_hidden_element(tag: &str) -> bool {
     matches!(tag, "head" | "meta" | "title" | "script" | "style" | "link")
+}
+
+fn is_hidden_input(element: &ElementData) -> bool {
+    element.tag_name == "input"
+        && element
+            .attributes
+            .get("type")
+            .map(|value| value.trim().eq_ignore_ascii_case("hidden"))
+            .unwrap_or(false)
 }
 
 /// HTMLのデフォルト表示に寄せた "最小" block 判定
