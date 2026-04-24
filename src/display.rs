@@ -312,8 +312,8 @@ fn paint_node_contents(
 
                 let src_raw = ed.attributes.get("src").map(|s| s.trim()).unwrap_or("");
                 let alt = ed
-                    .attributes
-                    .get("alt")
+                    .alt
+                    .as_deref()
                     .map(|s| collapse_whitespace(s))
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty());

@@ -18,6 +18,7 @@ pub struct Node {
 pub struct ElementData {
     pub tag_name: String,
     pub href: Option<String>,
+    pub alt: Option<String>,
     pub attributes: HashMap<String, String>,
 }
 
@@ -43,12 +44,14 @@ pub fn text(data: String) -> Node {
 
 pub fn elem(name: String, attrs: HashMap<String, String>, children: Vec<Node>) -> Node {
     let href = attrs.get("href").cloned();
+    let alt = attrs.get("alt").cloned();
 
     Node {
         children,
         node_type: NodeType::Element(ElementData {
             tag_name: name,
             href,
+            alt,
             attributes: attrs,
         }),
     }
