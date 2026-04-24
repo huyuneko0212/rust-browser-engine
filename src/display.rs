@@ -1,6 +1,6 @@
 use crate::constants::{color, display as display_constants, layout as layout_constants};
 use crate::layout::{BoxType, CornerRadii, LayoutBox};
-use crate::style::{Display, Position};
+use crate::style::{Display, FormSubmit, Position};
 use fontdue::Font;
 use std::cmp::Ordering;
 
@@ -27,6 +27,7 @@ pub struct DrawRect {
     pub base_color: [f32; 4],
     pub href: Option<String>,
     pub link_id: Option<usize>,
+    pub form_submit: Option<FormSubmit>,
     pub fixed: bool,
 }
 
@@ -55,6 +56,7 @@ pub struct DrawText {
     pub base_color: [f32; 4],
 
     pub href: Option<String>,
+    pub form_submit: Option<FormSubmit>,
     pub hit: crate::layout::Rect,
     pub fixed: bool,
 }
@@ -134,6 +136,7 @@ fn paint_node_contents(
                 let radius = d
                     .border_radius
                     .normalize(border_box.width, border_box.height);
+                let form_submit = form_submit_for_node(sn);
 
                 if let Some(bg) = sn.background_color() {
                     out.push(DisplayItem::Rect(DrawRect {
@@ -146,6 +149,7 @@ fn paint_node_contents(
                         base_color: bg,
                         href: None,
                         link_id: None,
+                        form_submit: form_submit.clone(),
                         fixed,
                     }));
                 }
@@ -197,6 +201,7 @@ fn paint_node_contents(
                         color,
                         base_color,
                         href: None,
+                        form_submit: None,
                         hit: crate::layout::Rect {
                             x: bx,
                             y: c.y,
@@ -239,6 +244,7 @@ fn paint_node_contents(
                                 color,
                                 base_color,
                                 href: sn.link_href.clone(),
+                                form_submit: None,
                                 hit: c.clone(),
                                 fixed,
                             }));
@@ -256,6 +262,7 @@ fn paint_node_contents(
                                     base_color,
                                     href: sn.link_href.clone(),
                                     link_id: sn.link_id,
+                                    form_submit: None,
                                     fixed,
                                 }));
                             }
@@ -275,6 +282,7 @@ fn paint_node_contents(
                                 color,
                                 base_color,
                                 href: sn.link_href.clone(),
+                                form_submit: None,
                                 hit: c.clone(),
                                 fixed,
                             }));
@@ -292,6 +300,7 @@ fn paint_node_contents(
                                     base_color,
                                     href: sn.link_href.clone(),
                                     link_id: sn.link_id,
+                                    form_submit: None,
                                     fixed,
                                 }));
                             }
@@ -756,6 +765,7 @@ mod tests {
             base_color: color,
             href: Some("https://example.com".to_string()),
             link_id: Some(link_id),
+            form_submit: None,
             fixed: false,
         })
     }
@@ -1200,6 +1210,53 @@ mod tests {
     }
 
     #[test]
+    fn submit_input_paints_form_activation_area() {
+        let items = display_list_for(
+            r#"
+            <form action="/search">
+                <input name="q" value="rust">
+                <input type="submit" name="btn" value="Search">
+            </form>
+            "#,
+            r#"
+            form { display: block; width: 320px; margin: 0; padding: 0; }
+            input {
+                display: inline-block;
+                padding: 2px 4px;
+                border: 1px solid #9aa0a6;
+                background: #ffffff;
+            }
+            input[type=submit] {
+                padding: 2px 8px;
+                border: 1px solid #8f8f8f;
+                background: #f3f3f3;
+            }
+            "#,
+        );
+
+        let submit = items.iter().find_map(|item| match item {
+            DisplayItem::Rect(rect) => rect.form_submit.as_ref(),
+            _ => None,
+        });
+
+        let submit = submit.expect("submit input should paint activation area");
+        assert_eq!(submit.action.as_deref(), Some("/search"));
+        assert_eq!(
+            submit.fields,
+            vec![
+                crate::style::FormField {
+                    name: "q".to_string(),
+                    value: "rust".to_string(),
+                },
+                crate::style::FormField {
+                    name: "btn".to_string(),
+                    value: "Search".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn button_paints_ua_box_and_child_text() {
         let items = display_list_for(
             r#"<p>Before <button>Click me</button> After</p>"#,
@@ -1307,6 +1364,7 @@ fn paint_inline_element_fragments(node: &LayoutBox<'_>, out: &mut Vec<DisplayIte
                 base_color: bg,
                 href: None,
                 link_id: None,
+                form_submit: form_submit_for_node(sn),
                 fixed,
             }));
         }
@@ -1365,6 +1423,7 @@ fn push_alt_text(
         color,
         base_color,
         href: sn.link_href.clone(),
+        form_submit: None,
         hit: c.clone(),
         fixed,
     }));
@@ -1417,9 +1476,14 @@ fn push_input_text(
         color,
         base_color: color,
         href: sn.link_href.clone(),
+        form_submit: form_submit_for_node(sn),
         hit: c.clone(),
         fixed,
     }));
+}
+
+fn form_submit_for_node(sn: &crate::style::StyledNode) -> Option<FormSubmit> {
+    crate::style::form_submit_for_element(sn)
 }
 
 fn input_text_and_color(

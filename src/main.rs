@@ -197,6 +197,129 @@ fn hit_test_link(display_list: &[DisplayItem], x: f32, y: f32, scroll_y: f32) ->
     })
 }
 
+fn hit_test_form_submit(
+    display_list: &[DisplayItem],
+    x: f32,
+    y: f32,
+    scroll_y: f32,
+) -> Option<style::FormSubmit> {
+    let doc_y = y + scroll_y;
+
+    display_list.iter().rev().find_map(|item| match item {
+        DisplayItem::Text(t) => t.form_submit.as_ref().and_then(|submit| {
+            let r = &t.hit;
+            let test_y = if t.fixed { y } else { doc_y };
+            (x >= r.x && x <= r.x + r.width && test_y >= r.y && test_y <= r.y + r.height)
+                .then(|| submit.clone())
+        }),
+        DisplayItem::Rect(r) => r.form_submit.as_ref().and_then(|submit| {
+            let test_y = if r.fixed { y } else { doc_y };
+            (x >= r.x && x <= r.x + r.w && test_y >= r.y && test_y <= r.y + r.h)
+                .then(|| submit.clone())
+        }),
+        _ => None,
+    })
+}
+
+fn form_submission_url(base_url: &url::URL, submit: &style::FormSubmit) -> Option<url::URL> {
+    if !submit.method.eq_ignore_ascii_case("get") {
+        println!("unsupported form method: {}", submit.method);
+        return None;
+    }
+
+    let mut target = submit
+        .action
+        .as_deref()
+        .map(|action| base_url.resolve_location(action))
+        .unwrap_or_else(|| base_url.clone());
+    let query = encode_form_fields(&submit.fields);
+
+    if !query.is_empty() {
+        let separator = if target.path.contains('?') { '&' } else { '?' };
+        target.path.push(separator);
+        target.path.push_str(&query);
+    }
+
+    Some(target)
+}
+
+fn encode_form_fields(fields: &[style::FormField]) -> String {
+    fields
+        .iter()
+        .map(|field| {
+            format!(
+                "{}={}",
+                percent_encode_form_component(&field.name),
+                percent_encode_form_component(&field.value)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn percent_encode_form_component(value: &str) -> String {
+    let mut out = String::new();
+
+    for byte in value.as_bytes() {
+        match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'*' => {
+                out.push(*byte as char)
+            }
+            b' ' => out.push('+'),
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn form_submission_url_builds_get_query() {
+        let base = url::URL::new("https://example.com/index.html");
+        let submit = style::FormSubmit {
+            action: Some("/search".to_string()),
+            method: "get".to_string(),
+            fields: vec![
+                style::FormField {
+                    name: "q".to_string(),
+                    value: "rust browser".to_string(),
+                },
+                style::FormField {
+                    name: "lang".to_string(),
+                    value: "ja".to_string(),
+                },
+            ],
+        };
+
+        let next = form_submission_url(&base, &submit).expect("GET form should produce url");
+
+        assert_eq!(next.scheme, "https");
+        assert_eq!(next.host, "example.com");
+        assert_eq!(next.path, "/search?q=rust+browser&lang=ja");
+    }
+
+    #[test]
+    fn form_submission_url_uses_current_url_without_action() {
+        let base = url::URL::new("https://example.com/page.html?old=1");
+        let submit = style::FormSubmit {
+            action: None,
+            method: "get".to_string(),
+            fields: vec![style::FormField {
+                name: "q".to_string(),
+                value: "rust".to_string(),
+            }],
+        };
+
+        let next = form_submission_url(&base, &submit).expect("GET form should produce url");
+
+        assert_eq!(next.path, "/page.html?old=1&q=rust");
+    }
+}
+
 fn estimate_doc_height(display_list: &[DisplayItem]) -> f32 {
     display_list.iter().fold(1.0f32, |max_y, it| match it {
         DisplayItem::Rect(r) if !r.fixed => max_y.max(r.y + r.h),
@@ -558,8 +681,10 @@ fn main() {
                         mouse_y = position.y as f32;
 
                         let now = hit_test_link(&state.display_list, mouse_x, mouse_y, scroll_y);
+                        let form_submit =
+                            hit_test_form_submit(&state.display_list, mouse_x, mouse_y, scroll_y);
 
-                        window.set_cursor_icon(if now.is_some() {
+                        window.set_cursor_icon(if now.is_some() || form_submit.is_some() {
                             CursorIcon::Pointer
                         } else {
                             CursorIcon::Default
@@ -575,7 +700,28 @@ fn main() {
                         state: st, button, ..
                     } => {
                         if button == MouseButton::Left && st == ElementState::Pressed {
-                            if let Some(href) =
+                            if let Some(submit) =
+                                hit_test_form_submit(&state.display_list, mouse_x, mouse_y, scroll_y)
+                            {
+                                if let Some(next) = form_submission_url(&state.url, &submit) {
+                                    state.navigate(
+                                        next,
+                                        gpu.viewport_width(),
+                                        gpu.viewport_height(),
+                                        &layout_font,
+                                    );
+
+                                    scroll_y = 0.0;
+                                    hovered_href = None;
+                                    apply_hover(&mut state.display_list, None);
+
+                                    scroll_y = clamp_scroll(
+                                        scroll_y,
+                                        state.doc_height,
+                                        gpu.viewport_height(),
+                                    );
+                                }
+                            } else if let Some(href) =
                                 hit_test_link(&state.display_list, mouse_x, mouse_y, scroll_y)
                             {
                                 let next = state.url.resolve_location(&href);

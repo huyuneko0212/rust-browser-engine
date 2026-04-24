@@ -15,6 +15,27 @@ pub struct StyledNode {
     pub children: Vec<StyledNode>,
     pub link_href: Option<String>,
     pub link_id: Option<usize>,
+    pub form_context: Option<FormContext>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormField {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormContext {
+    pub action: Option<String>,
+    pub method: String,
+    pub fields: Vec<FormField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormSubmit {
+    pub action: Option<String>,
+    pub method: String,
+    pub fields: Vec<FormField>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,6 +299,7 @@ fn is_block_element(tag: &str) -> bool {
             | "footer"
             | "nav"
             | "main"
+            | "form"
             | "pre"
             | "blockquote"
     )
@@ -356,7 +378,7 @@ fn is_unitless_number(value: &str) -> bool {
 pub fn style_tree(root: Node, stylesheet: &Stylesheet) -> StyledNode {
     let mut next_link_id = 1usize;
     let initial_font_size_px = layout_constants::DEFAULT_FONT_SIZE_PX;
-    style_tree_with_ctx(
+    let styled = style_tree_with_ctx(
         root,
         stylesheet,
         None,
@@ -366,7 +388,9 @@ pub fn style_tree(root: Node, stylesheet: &Stylesheet) -> StyledNode {
         initial_font_size_px,
         initial_font_size_px,
         &mut next_link_id,
-    )
+    );
+
+    annotate_form_contexts(styled, None)
 }
 
 fn style_tree_with_ctx(
@@ -468,7 +492,209 @@ fn style_tree_with_ctx(
         children,
         link_href: link_here,
         link_id: link_id_here,
+        form_context: None,
     }
+}
+
+fn annotate_form_contexts(
+    mut node: StyledNode,
+    active_form: Option<FormContext>,
+) -> StyledNode {
+    let is_form = matches!(&node.node.node_type, NodeType::Element(element) if element.tag_name == "form");
+
+    if is_form {
+        let base_context = form_context_from_node(&node);
+        node.children = node
+            .children
+            .into_iter()
+            .map(|child| annotate_form_contexts(child, Some(base_context.clone())))
+            .collect();
+
+        let mut full_context = base_context;
+        full_context.fields = collect_form_fields(&node);
+        node.form_context = Some(full_context.clone());
+
+        for child in &mut node.children {
+            assign_form_context(child, &full_context);
+        }
+
+        return node;
+    }
+
+    node.form_context = active_form.clone();
+    node.children = node
+        .children
+        .into_iter()
+        .map(|child| annotate_form_contexts(child, active_form.clone()))
+        .collect();
+    node
+}
+
+fn form_context_from_node(node: &StyledNode) -> FormContext {
+    let (action, method) = match &node.node.node_type {
+        NodeType::Element(element) => (
+            element
+                .attributes
+                .get("action")
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            element
+                .attributes
+                .get("method")
+                .map(|value| value.trim().to_ascii_lowercase())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "get".to_string()),
+        ),
+        _ => (None, "get".to_string()),
+    };
+
+    FormContext {
+        action,
+        method,
+        fields: Vec::new(),
+    }
+}
+
+fn assign_form_context(node: &mut StyledNode, context: &FormContext) {
+    if matches!(&node.node.node_type, NodeType::Element(element) if element.tag_name == "form") {
+        return;
+    }
+
+    node.form_context = Some(context.clone());
+    for child in &mut node.children {
+        assign_form_context(child, context);
+    }
+}
+
+fn collect_form_fields(node: &StyledNode) -> Vec<FormField> {
+    let mut fields = Vec::new();
+    collect_form_fields_into(node, &mut fields);
+    fields
+}
+
+fn collect_form_fields_into(node: &StyledNode, fields: &mut Vec<FormField>) {
+    if let Some(field) = successful_form_field(node) {
+        fields.push(field);
+    }
+
+    for child in &node.children {
+        collect_form_fields_into(child, fields);
+    }
+}
+
+fn successful_form_field(node: &StyledNode) -> Option<FormField> {
+    let NodeType::Element(element) = &node.node.node_type else {
+        return None;
+    };
+
+    if element.tag_name != "input" {
+        return None;
+    }
+
+    let name = element
+        .attributes
+        .get("name")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())?;
+    let input_type = input_type(element);
+
+    if matches!(
+        input_type.as_str(),
+        "button" | "submit" | "reset" | "image" | "file"
+    ) {
+        return None;
+    }
+
+    if matches!(input_type.as_str(), "checkbox" | "radio")
+        && !element.attributes.contains_key("checked")
+    {
+        return None;
+    }
+
+    Some(FormField {
+        name: name.to_string(),
+        value: element.attributes.get("value").cloned().unwrap_or_default(),
+    })
+}
+
+pub fn form_submit_for_element(node: &StyledNode) -> Option<FormSubmit> {
+    let NodeType::Element(element) = &node.node.node_type else {
+        return None;
+    };
+
+    let context = node.form_context.as_ref()?;
+    let mut fields = context.fields.clone();
+
+    match element.tag_name.as_str() {
+        "input" => {
+            let input_type = input_type(element);
+            if !matches!(input_type.as_str(), "submit" | "image") {
+                return None;
+            }
+
+            if let Some(field) = submitter_field(element, input_button_default_value(&input_type)) {
+                fields.push(field);
+            }
+        }
+        "button" => {
+            let button_type = element
+                .attributes
+                .get("type")
+                .map(|value| value.trim().to_ascii_lowercase())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "submit".to_string());
+
+            if button_type != "submit" {
+                return None;
+            }
+
+            if let Some(field) = submitter_field(element, String::new()) {
+                fields.push(field);
+            }
+        }
+        _ => return None,
+    }
+
+    Some(FormSubmit {
+        action: context.action.clone(),
+        method: context.method.clone(),
+        fields,
+    })
+}
+
+fn submitter_field(element: &ElementData, default_value: String) -> Option<FormField> {
+    let name = element
+        .attributes
+        .get("name")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())?;
+    let value = element
+        .attributes
+        .get("value")
+        .cloned()
+        .unwrap_or(default_value);
+
+    Some(FormField {
+        name: name.to_string(),
+        value,
+    })
+}
+
+fn input_button_default_value(input_type: &str) -> String {
+    match input_type {
+        "submit" => "Submit".to_string(),
+        "reset" => "Reset".to_string(),
+        _ => String::new(),
+    }
+}
+
+fn input_type(element: &ElementData) -> String {
+    element
+        .attributes
+        .get("type")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "text".to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1115,6 +1341,51 @@ mod tests {
         assert_eq!(
             text.value("background").map(|value| value.as_str()),
             Some("#ffffff")
+        );
+    }
+
+    #[test]
+    fn form_context_collects_successful_input_fields_for_submitter() {
+        let dom = crate::html::parse(
+            r#"
+            <form action="/search" method="get">
+                <input name="q" value="rust browser">
+                <input name="empty">
+                <input type="checkbox" name="checked" value="yes" checked>
+                <input type="checkbox" name="unchecked" value="no">
+                <input type="submit" id="submit" name="btn" value="Search">
+            </form>
+            "#
+            .to_string(),
+        );
+        let stylesheet = crate::css::Parser::new(String::new()).parse_stylesheet();
+
+        let styled = style_tree(dom, &stylesheet);
+        let submit = find_element_by_id(&styled, "submit").expect("submit input should exist");
+        let form_submit = form_submit_for_element(submit).expect("submit should be activatable");
+
+        assert_eq!(form_submit.action.as_deref(), Some("/search"));
+        assert_eq!(form_submit.method, "get");
+        assert_eq!(
+            form_submit.fields,
+            vec![
+                FormField {
+                    name: "q".to_string(),
+                    value: "rust browser".to_string(),
+                },
+                FormField {
+                    name: "empty".to_string(),
+                    value: String::new(),
+                },
+                FormField {
+                    name: "checked".to_string(),
+                    value: "yes".to_string(),
+                },
+                FormField {
+                    name: "btn".to_string(),
+                    value: "Search".to_string(),
+                },
+            ]
         );
     }
 
