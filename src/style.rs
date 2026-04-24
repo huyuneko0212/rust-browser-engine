@@ -16,6 +16,7 @@ pub struct StyledNode {
     pub link_href: Option<String>,
     pub link_id: Option<usize>,
     pub form_context: Option<FormContext>,
+    pub input_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -390,7 +391,9 @@ pub fn style_tree(root: Node, stylesheet: &Stylesheet) -> StyledNode {
         &mut next_link_id,
     );
 
-    annotate_form_contexts(styled, None)
+    let mut styled = annotate_form_contexts(styled, None);
+    assign_input_keys(&mut styled, "0");
+    styled
 }
 
 fn style_tree_with_ctx(
@@ -493,14 +496,77 @@ fn style_tree_with_ctx(
         link_href: link_here,
         link_id: link_id_here,
         form_context: None,
+        input_key: None,
     }
 }
 
-fn annotate_form_contexts(
-    mut node: StyledNode,
-    active_form: Option<FormContext>,
-) -> StyledNode {
-    let is_form = matches!(&node.node.node_type, NodeType::Element(element) if element.tag_name == "form");
+pub fn set_input_value(root: &mut StyledNode, key: &str, value: String) -> bool {
+    let changed = set_input_value_inner(root, key, &value);
+    if changed {
+        refresh_form_contexts(root);
+    }
+    changed
+}
+
+pub fn input_value(root: &StyledNode, key: &str) -> Option<String> {
+    if root.input_key.as_deref() == Some(key)
+        && let NodeType::Element(element) = &root.node.node_type
+    {
+        return Some(element.attributes.get("value").cloned().unwrap_or_default());
+    }
+
+    root.children
+        .iter()
+        .find_map(|child| input_value(child, key))
+}
+
+pub fn refresh_form_contexts(root: &mut StyledNode) {
+    let cloned = root.clone();
+    *root = annotate_form_contexts(cloned, None);
+}
+
+fn set_input_value_inner(node: &mut StyledNode, key: &str, value: &str) -> bool {
+    if node.input_key.as_deref() == Some(key)
+        && let NodeType::Element(element) = &mut node.node.node_type
+    {
+        element
+            .attributes
+            .insert("value".to_string(), value.to_string());
+        return true;
+    }
+
+    node.children
+        .iter_mut()
+        .any(|child| set_input_value_inner(child, key, value))
+}
+
+fn assign_input_keys(node: &mut StyledNode, path: &str) {
+    node.input_key = match &node.node.node_type {
+        NodeType::Element(element) if element.tag_name == "input" && is_editable_input(element) => {
+            Some(format!("input:{path}"))
+        }
+        _ => None,
+    };
+
+    for (index, child) in node.children.iter_mut().enumerate() {
+        assign_input_keys(child, &format!("{path}.{index}"));
+    }
+}
+
+pub fn is_editable_input(element: &ElementData) -> bool {
+    if element.tag_name != "input" {
+        return false;
+    }
+
+    matches!(
+        input_type(element).as_str(),
+        "text" | "search" | "password" | "email" | "url" | "tel"
+    )
+}
+
+fn annotate_form_contexts(mut node: StyledNode, active_form: Option<FormContext>) -> StyledNode {
+    let is_form =
+        matches!(&node.node.node_type, NodeType::Element(element) if element.tag_name == "form");
 
     if is_form {
         let base_context = form_context_from_node(&node);
@@ -659,6 +725,23 @@ pub fn form_submit_for_element(node: &StyledNode) -> Option<FormSubmit> {
         action: context.action.clone(),
         method: context.method.clone(),
         fields,
+    })
+}
+
+pub fn implicit_form_submit_for_input(node: &StyledNode) -> Option<FormSubmit> {
+    let NodeType::Element(element) = &node.node.node_type else {
+        return None;
+    };
+
+    if !is_editable_input(element) {
+        return None;
+    }
+
+    let context = node.form_context.as_ref()?;
+    Some(FormSubmit {
+        action: context.action.clone(),
+        method: context.method.clone(),
+        fields: context.fields.clone(),
     })
 }
 
@@ -990,11 +1073,7 @@ fn unquote_attr_value(value: &str) -> &str {
     value
         .strip_prefix('"')
         .and_then(|v| v.strip_suffix('"'))
-        .or_else(|| {
-            value
-                .strip_prefix('\'')
-                .and_then(|v| v.strip_suffix('\''))
-        })
+        .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
         .unwrap_or(value)
 }
 
@@ -1386,6 +1465,42 @@ mod tests {
                     value: "Search".to_string(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn set_input_value_refreshes_form_submit_fields() {
+        let dom = crate::html::parse(
+            r#"
+            <form action="/search">
+                <input id="q" name="q" value="old">
+                <input type="submit" id="submit" value="Search">
+            </form>
+            "#
+            .to_string(),
+        );
+        let stylesheet = crate::css::Parser::new(String::new()).parse_stylesheet();
+
+        let mut styled = style_tree(dom, &stylesheet);
+        let input_key = find_element_by_id(&styled, "q")
+            .and_then(|node| node.input_key.clone())
+            .expect("editable input should have key");
+
+        assert!(set_input_value(
+            &mut styled,
+            &input_key,
+            "new value".to_string()
+        ));
+
+        let submit = find_element_by_id(&styled, "submit").expect("submit input should exist");
+        let form_submit = form_submit_for_element(submit).expect("submit should be activatable");
+
+        assert_eq!(
+            form_submit.fields,
+            vec![FormField {
+                name: "q".to_string(),
+                value: "new value".to_string(),
+            }]
         );
     }
 

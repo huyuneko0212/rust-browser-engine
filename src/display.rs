@@ -28,6 +28,7 @@ pub struct DrawRect {
     pub href: Option<String>,
     pub link_id: Option<usize>,
     pub form_submit: Option<FormSubmit>,
+    pub input_key: Option<String>,
     pub fixed: bool,
 }
 
@@ -57,6 +58,7 @@ pub struct DrawText {
 
     pub href: Option<String>,
     pub form_submit: Option<FormSubmit>,
+    pub input_key: Option<String>,
     pub hit: crate::layout::Rect,
     pub fixed: bool,
 }
@@ -150,6 +152,7 @@ fn paint_node_contents(
                         href: None,
                         link_id: None,
                         form_submit: form_submit.clone(),
+                        input_key: sn.input_key.clone(),
                         fixed,
                     }));
                 }
@@ -202,6 +205,7 @@ fn paint_node_contents(
                         base_color,
                         href: None,
                         form_submit: None,
+                        input_key: None,
                         hit: crate::layout::Rect {
                             x: bx,
                             y: c.y,
@@ -245,6 +249,7 @@ fn paint_node_contents(
                                 base_color,
                                 href: sn.link_href.clone(),
                                 form_submit: None,
+                                input_key: None,
                                 hit: c.clone(),
                                 fixed,
                             }));
@@ -263,6 +268,7 @@ fn paint_node_contents(
                                     href: sn.link_href.clone(),
                                     link_id: sn.link_id,
                                     form_submit: None,
+                                    input_key: None,
                                     fixed,
                                 }));
                             }
@@ -283,6 +289,7 @@ fn paint_node_contents(
                                 base_color,
                                 href: sn.link_href.clone(),
                                 form_submit: None,
+                                input_key: None,
                                 hit: c.clone(),
                                 fixed,
                             }));
@@ -301,6 +308,7 @@ fn paint_node_contents(
                                     href: sn.link_href.clone(),
                                     link_id: sn.link_id,
                                     form_submit: None,
+                                    input_key: None,
                                     fixed,
                                 }));
                             }
@@ -766,6 +774,7 @@ mod tests {
             href: Some("https://example.com".to_string()),
             link_id: Some(link_id),
             form_submit: None,
+            input_key: None,
             fixed: false,
         })
     }
@@ -1159,9 +1168,28 @@ mod tests {
             "#,
         );
 
-        assert!(items
-            .iter()
-            .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "Ferris")));
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "Ferris"))
+        );
+    }
+
+    #[test]
+    fn editable_input_paints_focusable_hit_area() {
+        let items = display_list_for(
+            r#"<p><input id="q" name="q" value="rust"></p>"#,
+            r#"
+            p { display: block; width: 320px; margin: 0; padding: 0; }
+            input { display: inline-block; padding: 2px 4px; border: 1px solid #999; background: #fff; }
+            "#,
+        );
+
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item, DisplayItem::Rect(rect) if rect.input_key.is_some()))
+        );
     }
 
     #[test]
@@ -1174,12 +1202,16 @@ mod tests {
             "#,
         );
 
-        assert!(items
-            .iter()
-            .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "******")));
-        assert!(!items
-            .iter()
-            .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "secret")));
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "******"))
+        );
+        assert!(
+            !items
+                .iter()
+                .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "secret"))
+        );
     }
 
     #[test]
@@ -1202,11 +1234,19 @@ mod tests {
             "#,
         );
 
-        assert!(items
-            .iter()
-            .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "Google Search")));
-        assert_eq!(rect_count(&items, [0.9529412, 0.9529412, 0.9529412, 1.0]), 1);
-        assert_eq!(border_count(&items, [0.56078434, 0.56078434, 0.56078434, 1.0]), 1);
+        assert!(
+            items.iter().any(
+                |item| matches!(item, DisplayItem::Text(text) if text.text == "Google Search")
+            )
+        );
+        assert_eq!(
+            rect_count(&items, [0.9529412, 0.9529412, 0.9529412, 1.0]),
+            1
+        );
+        assert_eq!(
+            border_count(&items, [0.56078434, 0.56078434, 0.56078434, 1.0]),
+            1
+        );
     }
 
     #[test]
@@ -1235,7 +1275,7 @@ mod tests {
         );
 
         let submit = items.iter().find_map(|item| match item {
-            DisplayItem::Rect(rect) => rect.form_submit.as_ref(),
+            DisplayItem::Rect(rect) if rect.input_key.is_none() => rect.form_submit.as_ref(),
             _ => None,
         });
 
@@ -1271,14 +1311,24 @@ mod tests {
             "#,
         );
 
-        assert!(items
-            .iter()
-            .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "Click")));
-        assert!(items
-            .iter()
-            .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "me")));
-        assert_eq!(rect_count(&items, [0.9529412, 0.9529412, 0.9529412, 1.0]), 1);
-        assert_eq!(border_count(&items, [0.56078434, 0.56078434, 0.56078434, 1.0]), 1);
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "Click"))
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item, DisplayItem::Text(text) if text.text == "me"))
+        );
+        assert_eq!(
+            rect_count(&items, [0.9529412, 0.9529412, 0.9529412, 1.0]),
+            1
+        );
+        assert_eq!(
+            border_count(&items, [0.56078434, 0.56078434, 0.56078434, 1.0]),
+            1
+        );
     }
 }
 
@@ -1365,6 +1415,7 @@ fn paint_inline_element_fragments(node: &LayoutBox<'_>, out: &mut Vec<DisplayIte
                 href: None,
                 link_id: None,
                 form_submit: form_submit_for_node(sn),
+                input_key: sn.input_key.clone(),
                 fixed,
             }));
         }
@@ -1424,6 +1475,7 @@ fn push_alt_text(
         base_color,
         href: sn.link_href.clone(),
         form_submit: None,
+        input_key: None,
         hit: c.clone(),
         fixed,
     }));
@@ -1477,6 +1529,7 @@ fn push_input_text(
         base_color: color,
         href: sn.link_href.clone(),
         form_submit: form_submit_for_node(sn),
+        input_key: sn.input_key.clone(),
         hit: c.clone(),
         fixed,
     }));
@@ -1484,6 +1537,7 @@ fn push_input_text(
 
 fn form_submit_for_node(sn: &crate::style::StyledNode) -> Option<FormSubmit> {
     crate::style::form_submit_for_element(sn)
+        .or_else(|| crate::style::implicit_form_submit_for_input(sn))
 }
 
 fn input_text_and_color(

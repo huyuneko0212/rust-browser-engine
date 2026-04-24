@@ -20,8 +20,9 @@ use std::env;
 
 use winit::{
     dpi::LogicalSize,
-    event::{ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent},
+    event::{ElementState, Event, Ime, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
+    keyboard::{Key, NamedKey},
     window::{CursorIcon, WindowBuilder},
 };
 
@@ -216,6 +217,25 @@ fn hit_test_form_submit(
             let test_y = if r.fixed { y } else { doc_y };
             (x >= r.x && x <= r.x + r.w && test_y >= r.y && test_y <= r.y + r.h)
                 .then(|| submit.clone())
+        }),
+        _ => None,
+    })
+}
+
+fn hit_test_input(display_list: &[DisplayItem], x: f32, y: f32, scroll_y: f32) -> Option<String> {
+    let doc_y = y + scroll_y;
+
+    display_list.iter().rev().find_map(|item| match item {
+        DisplayItem::Text(t) => t.input_key.as_ref().and_then(|key| {
+            let r = &t.hit;
+            let test_y = if t.fixed { y } else { doc_y };
+            (x >= r.x && x <= r.x + r.width && test_y >= r.y && test_y <= r.y + r.height)
+                .then(|| key.clone())
+        }),
+        DisplayItem::Rect(r) => r.input_key.as_ref().and_then(|key| {
+            let test_y = if r.fixed { y } else { doc_y };
+            (x >= r.x && x <= r.x + r.w && test_y >= r.y && test_y <= r.y + r.h)
+                .then(|| key.clone())
         }),
         _ => None,
     })
@@ -555,6 +575,8 @@ struct BrowserState {
     page: Option<PageDocument>,
     display_list: Vec<DisplayItem>,
     doc_height: f32,
+    input_values: HashMap<String, String>,
+    focused_input: Option<String>,
 }
 
 impl BrowserState {
@@ -569,6 +591,8 @@ impl BrowserState {
             page: None,
             display_list: vec![],
             doc_height: 0.0,
+            input_values: HashMap::new(),
+            focused_input: None,
         };
         state.load_current_url(viewport_width, viewport_height, font);
         state
@@ -583,6 +607,8 @@ impl BrowserState {
     ) {
         println!("\n=== navigate -> {} ===", url_to_abs_string(&next));
         self.url = next;
+        self.input_values.clear();
+        self.focused_input = None;
         self.load_current_url(viewport_width, viewport_height, font);
     }
 
@@ -593,10 +619,18 @@ impl BrowserState {
         font: &fontdue::Font,
     ) {
         self.page = fetch_page_document(&self.url);
+        self.input_values.clear();
+        self.focused_input = None;
         self.relayout(viewport_width, viewport_height, font);
     }
 
     fn relayout(&mut self, viewport_width: f32, viewport_height: f32, font: &fontdue::Font) {
+        if let Some(page) = self.page.as_mut() {
+            for (key, value) in &self.input_values {
+                style::set_input_value(&mut page.styled_root, key, value.clone());
+            }
+        }
+
         self.display_list = self
             .page
             .as_ref()
@@ -605,6 +639,80 @@ impl BrowserState {
             })
             .unwrap_or_default();
         self.doc_height = estimate_doc_height(&self.display_list);
+    }
+
+    fn focus_input(&mut self, key: Option<String>) {
+        if let Some(key) = key {
+            if !self.input_values.contains_key(&key)
+                && let Some(value) = self
+                    .page
+                    .as_ref()
+                    .and_then(|page| style::input_value(&page.styled_root, &key))
+            {
+                self.input_values.insert(key.clone(), value);
+            }
+            self.focused_input = Some(key);
+        } else {
+            self.focused_input = None;
+        }
+    }
+
+    fn insert_text_into_focused_input(
+        &mut self,
+        text: &str,
+        viewport_width: f32,
+        viewport_height: f32,
+        font: &fontdue::Font,
+    ) -> bool {
+        let Some(key) = self.focused_input.clone() else {
+            return false;
+        };
+
+        let mut changed = false;
+        let value = self.input_values.entry(key).or_default();
+        for ch in text.chars() {
+            if !ch.is_control() {
+                value.push(ch);
+                changed = true;
+            }
+        }
+
+        if changed {
+            self.relayout(viewport_width, viewport_height, font);
+        }
+        changed
+    }
+
+    fn backspace_focused_input(
+        &mut self,
+        viewport_width: f32,
+        viewport_height: f32,
+        font: &fontdue::Font,
+    ) -> bool {
+        let Some(key) = self.focused_input.clone() else {
+            return false;
+        };
+
+        let value = self.input_values.entry(key).or_default();
+        let changed = value.pop().is_some();
+        if changed {
+            self.relayout(viewport_width, viewport_height, font);
+        }
+        changed
+    }
+
+    fn focused_form_submit(&self) -> Option<style::FormSubmit> {
+        let key = self.focused_input.as_ref()?;
+
+        self.display_list.iter().find_map(|item| match item {
+            DisplayItem::Rect(rect) if rect.input_key.as_ref() == Some(key) => {
+                rect.form_submit.clone()
+            }
+            DisplayItem::Text(text) if text.input_key.as_ref() == Some(key) => {
+                text.form_submit.clone()
+            }
+            _ => None,
+        })
     }
 }
 
@@ -625,6 +733,7 @@ fn main() {
             .build(&event_loop)
             .unwrap(),
     ));
+    window.set_ime_allowed(false);
 
     let mut gpu = pollster::block_on(GPU::new(window));
     let mut state = BrowserState::new(
@@ -680,11 +789,15 @@ fn main() {
                         mouse_x = position.x as f32;
                         mouse_y = position.y as f32;
 
+                        let input_hit =
+                            hit_test_input(&state.display_list, mouse_x, mouse_y, scroll_y);
                         let now = hit_test_link(&state.display_list, mouse_x, mouse_y, scroll_y);
                         let form_submit =
                             hit_test_form_submit(&state.display_list, mouse_x, mouse_y, scroll_y);
 
-                        window.set_cursor_icon(if now.is_some() || form_submit.is_some() {
+                        window.set_cursor_icon(if input_hit.is_some() {
+                            CursorIcon::Text
+                        } else if now.is_some() || form_submit.is_some() {
                             CursorIcon::Pointer
                         } else {
                             CursorIcon::Default
@@ -700,9 +813,19 @@ fn main() {
                         state: st, button, ..
                     } => {
                         if button == MouseButton::Left && st == ElementState::Pressed {
-                            if let Some(submit) =
-                                hit_test_form_submit(&state.display_list, mouse_x, mouse_y, scroll_y)
-                            {
+                            let input_hit =
+                                hit_test_input(&state.display_list, mouse_x, mouse_y, scroll_y);
+                            if input_hit.is_some() {
+                                state.focus_input(input_hit);
+                                window.set_ime_allowed(true);
+                            } else if let Some(submit) = hit_test_form_submit(
+                                &state.display_list,
+                                mouse_x,
+                                mouse_y,
+                                scroll_y,
+                            ) {
+                                state.focus_input(None);
+                                window.set_ime_allowed(false);
                                 if let Some(next) = form_submission_url(&state.url, &submit) {
                                     state.navigate(
                                         next,
@@ -724,6 +847,8 @@ fn main() {
                             } else if let Some(href) =
                                 hit_test_link(&state.display_list, mouse_x, mouse_y, scroll_y)
                             {
+                                state.focus_input(None);
+                                window.set_ime_allowed(false);
                                 let next = state.url.resolve_location(&href);
                                 state.navigate(
                                     next,
@@ -738,7 +863,61 @@ fn main() {
 
                                 scroll_y =
                                     clamp_scroll(scroll_y, state.doc_height, gpu.viewport_height());
+                            } else {
+                                state.focus_input(None);
+                                window.set_ime_allowed(false);
                             }
+                        }
+                    }
+
+                    WindowEvent::KeyboardInput { event, .. } => {
+                        if event.state == ElementState::Pressed && state.focused_input.is_some() {
+                            match &event.logical_key {
+                                Key::Named(NamedKey::Backspace) => {
+                                    state.backspace_focused_input(
+                                        gpu.viewport_width(),
+                                        gpu.viewport_height(),
+                                        &layout_font,
+                                    );
+                                }
+                                Key::Named(NamedKey::Enter) => {
+                                    if let Some(submit) = state.focused_form_submit()
+                                        && let Some(next) = form_submission_url(&state.url, &submit)
+                                    {
+                                        state.navigate(
+                                            next,
+                                            gpu.viewport_width(),
+                                            gpu.viewport_height(),
+                                            &layout_font,
+                                        );
+                                        window.set_ime_allowed(false);
+                                        scroll_y = 0.0;
+                                        hovered_href = None;
+                                        apply_hover(&mut state.display_list, None);
+                                    }
+                                }
+                                _ => {
+                                    if let Some(text) = event.text.as_deref() {
+                                        state.insert_text_into_focused_input(
+                                            text,
+                                            gpu.viewport_width(),
+                                            gpu.viewport_height(),
+                                            &layout_font,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    WindowEvent::Ime(Ime::Commit(text)) => {
+                        if state.focused_input.is_some() {
+                            state.insert_text_into_focused_input(
+                                &text,
+                                gpu.viewport_width(),
+                                gpu.viewport_height(),
+                                &layout_font,
+                            );
                         }
                     }
 
