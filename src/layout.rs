@@ -170,6 +170,30 @@ struct FloatContext {
     floats: Vec<PlacedFloat>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlexDirection {
+    Row,
+    Column,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JustifyContent {
+    FlexStart,
+    FlexEnd,
+    Center,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AlignItems {
+    Stretch,
+    FlexStart,
+    FlexEnd,
+    Center,
+}
+
 impl FloatContext {
     fn add(&mut self, side: Float, rect: Rect) {
         self.floats.push(PlacedFloat { side, rect });
@@ -307,6 +331,10 @@ impl<'a> LayoutBox<'a> {
         self.node_display() == Some(Display::InlineBlock)
     }
 
+    fn is_flex_container(&self) -> bool {
+        self.node_display() == Some(Display::Flex)
+    }
+
     fn node_position(&self) -> Position {
         self.get_style_node()
             .map(|node| node.position())
@@ -357,13 +385,25 @@ impl<'a> LayoutBox<'a> {
         self.paint_fragments.clear();
 
         match self.box_type {
-            BoxType::BlockNode(_) => self.layout_block_with_context(
-                containing_block,
-                positioned_containing_block,
-                viewport,
-                font,
-                img_cache,
-            ),
+            BoxType::BlockNode(_) => {
+                if self.is_flex_container() {
+                    self.layout_flex_container_with_context(
+                        containing_block,
+                        positioned_containing_block,
+                        viewport,
+                        font,
+                        img_cache,
+                    );
+                } else {
+                    self.layout_block_with_context(
+                        containing_block,
+                        positioned_containing_block,
+                        viewport,
+                        font,
+                        img_cache,
+                    );
+                }
+            }
             BoxType::InlineNode(_) => {
                 if self.is_inline_block_box() {
                     self.layout_inline_block_with_context(
@@ -442,6 +482,57 @@ impl<'a> LayoutBox<'a> {
         }
     }
 
+    fn layout_flex_container_with_context(
+        &mut self,
+        containing_block: Dimensions,
+        positioned_containing_block: Dimensions,
+        viewport: Dimensions,
+        font: &Font,
+        img_cache: &dyn ImageSizeProvider,
+    ) {
+        let position = self.node_position();
+        let out_of_flow = position.is_out_of_flow();
+        let positioning_block = if position == Position::Fixed {
+            viewport.clone()
+        } else {
+            positioned_containing_block.clone()
+        };
+        let model_block = if out_of_flow {
+            positioning_block.clone()
+        } else {
+            containing_block.clone()
+        };
+
+        self.calculate_block_model(model_block.clone());
+        if out_of_flow {
+            self.calculate_positioned_block_width(positioning_block.clone());
+        } else {
+            self.calculate_block_width(containing_block.clone());
+        }
+        self.calculate_block_position(containing_block.clone());
+
+        let child_positioned_containing_block = if position.is_positioned() {
+            self.positioned_descendant_containing_block()
+        } else {
+            positioned_containing_block
+        };
+
+        self.layout_flex_children_with_context(
+            child_positioned_containing_block,
+            viewport.clone(),
+            font,
+            img_cache,
+        );
+        self.calculate_block_height_with_font(font, img_cache);
+        self.position_flex_children();
+
+        if out_of_flow {
+            self.apply_out_of_flow_position(&positioning_block);
+        } else {
+            self.apply_relative_position_if_needed(&containing_block);
+        }
+    }
+
     fn layout_anonymous_block_with_context(
         &mut self,
         containing_block: Dimensions,
@@ -490,6 +581,255 @@ impl<'a> LayoutBox<'a> {
         self.calculate_block_height_with_font(font, img_cache);
         sync_paint_fragments_with_content_rect(self);
         self.apply_relative_position_if_needed(&containing_block);
+    }
+
+    fn layout_flex_children_with_context(
+        &mut self,
+        positioned_containing_block: Dimensions,
+        viewport: Dimensions,
+        font: &Font,
+        img_cache: &dyn ImageSizeProvider,
+    ) {
+        let direction = flex_direction(self.get_style_node());
+        let align_items = align_items(self.get_style_node());
+        let viewport_w = viewport
+            .content
+            .width
+            .max(layout_constants::MIN_LAYOUT_SIZE_PX);
+        let viewport_h = viewport
+            .content
+            .height
+            .max(layout_constants::MIN_LAYOUT_SIZE_PX);
+        let container_x = self.dimensions.content.x;
+        let container_y = self.dimensions.content.y;
+        let container_w = self
+            .dimensions
+            .content
+            .width
+            .max(layout_constants::MIN_LAYOUT_SIZE_PX);
+        let container_h = self
+            .dimensions
+            .content
+            .height
+            .max(layout_constants::MIN_LAYOUT_SIZE_PX);
+        let main_gap = flex_main_gap_px(
+            self.get_style_node(),
+            direction,
+            container_w,
+            container_h,
+            viewport_w,
+            viewport_h,
+        );
+
+        let mut item_indices = Vec::new();
+        let mut total_grow = 0.0f32;
+        let mut main_total = 0.0f32;
+        let mut cross_max = 0.0f32;
+
+        for (idx, child) in self.children.iter_mut().enumerate() {
+            let mut cb = Dimensions::default();
+            cb.content.x = container_x;
+            cb.content.y = container_y;
+            cb.content.height = viewport_h;
+
+            if child.node_position().is_out_of_flow() {
+                cb.content.width = container_w;
+                child.layout_with_context(
+                    cb,
+                    positioned_containing_block.clone(),
+                    viewport.clone(),
+                    font,
+                    img_cache,
+                );
+                continue;
+            }
+
+            match direction {
+                FlexDirection::Row => {
+                    cb.content.width = flex_row_item_base_outer_width(
+                        child,
+                        font,
+                        img_cache,
+                        container_w,
+                        viewport_w,
+                        viewport_h,
+                    )
+                    .max(layout_constants::MIN_LAYOUT_SIZE_PX);
+                }
+                FlexDirection::Column => {
+                    cb.content.width = flex_column_item_outer_width(
+                        child,
+                        font,
+                        img_cache,
+                        container_w,
+                        viewport_w,
+                        viewport_h,
+                        align_items == AlignItems::Stretch,
+                    )
+                    .max(layout_constants::MIN_LAYOUT_SIZE_PX);
+                }
+            }
+
+            child.layout_with_context(
+                cb,
+                positioned_containing_block.clone(),
+                viewport.clone(),
+                font,
+                img_cache,
+            );
+
+            let grow = if direction == FlexDirection::Row
+                && !has_explicit_width(child, container_w, viewport_w, viewport_h)
+            {
+                flex_grow(child.get_style_node())
+            } else {
+                0.0
+            };
+
+            item_indices.push(idx);
+            total_grow += grow;
+            main_total += flex_item_main_size(child, direction);
+            cross_max = cross_max.max(flex_item_cross_size(child, direction));
+        }
+
+        if direction == FlexDirection::Row && total_grow > 0.0 && !item_indices.is_empty() {
+            let gaps_total = main_gap * (item_indices.len().saturating_sub(1) as f32);
+            let free_space = (container_w - main_total - gaps_total).max(0.0);
+
+            if free_space > 0.5 {
+                for idx in &item_indices {
+                    let grow = {
+                        let child = &self.children[*idx];
+                        if has_explicit_width(child, container_w, viewport_w, viewport_h) {
+                            0.0
+                        } else {
+                            flex_grow(child.get_style_node())
+                        }
+                    };
+
+                    if grow <= 0.0 {
+                        continue;
+                    }
+
+                    let extra = free_space * (grow / total_grow);
+                    let target_outer_w = {
+                        let child = &self.children[*idx];
+                        child.dimensions.margin_box_width() + extra
+                    };
+
+                    let mut cb = Dimensions::default();
+                    cb.content.x = container_x;
+                    cb.content.y = container_y;
+                    cb.content.width = target_outer_w.max(layout_constants::MIN_LAYOUT_SIZE_PX);
+                    cb.content.height = viewport_h;
+
+                    self.children[*idx].layout_with_context(
+                        cb,
+                        positioned_containing_block.clone(),
+                        viewport.clone(),
+                        font,
+                        img_cache,
+                    );
+                }
+
+                main_total = 0.0;
+                cross_max = 0.0;
+                for idx in &item_indices {
+                    let child = &self.children[*idx];
+                    main_total += flex_item_main_size(child, direction);
+                    cross_max = cross_max.max(flex_item_cross_size(child, direction));
+                }
+            }
+        }
+
+        self.dimensions.content.height = match direction {
+            FlexDirection::Row => cross_max.max(0.0),
+            FlexDirection::Column => {
+                let gaps_total = main_gap * (item_indices.len().saturating_sub(1) as f32);
+                (main_total + gaps_total).max(0.0)
+            }
+        };
+    }
+
+    fn position_flex_children(&mut self) {
+        let direction = flex_direction(self.get_style_node());
+        let justify = justify_content(self.get_style_node());
+        let align = align_items(self.get_style_node());
+        let container_x = self.dimensions.content.x;
+        let container_y = self.dimensions.content.y;
+        let container_main = match direction {
+            FlexDirection::Row => self.dimensions.content.width,
+            FlexDirection::Column => self.dimensions.content.height,
+        };
+        let container_cross = match direction {
+            FlexDirection::Row => self.dimensions.content.height,
+            FlexDirection::Column => self.dimensions.content.width,
+        };
+        let gap = flex_main_gap_px(
+            self.get_style_node(),
+            direction,
+            self.dimensions
+                .content
+                .width
+                .max(layout_constants::MIN_LAYOUT_SIZE_PX),
+            self.dimensions
+                .content
+                .height
+                .max(layout_constants::MIN_LAYOUT_SIZE_PX),
+            self.dimensions
+                .content
+                .width
+                .max(layout_constants::MIN_LAYOUT_SIZE_PX),
+            self.dimensions
+                .content
+                .height
+                .max(layout_constants::MIN_LAYOUT_SIZE_PX),
+        );
+
+        let in_flow_count = self
+            .children
+            .iter()
+            .filter(|child| !child.node_position().is_out_of_flow())
+            .count();
+
+        if in_flow_count == 0 {
+            return;
+        }
+
+        let used_main = self
+            .children
+            .iter()
+            .filter(|child| !child.node_position().is_out_of_flow())
+            .map(|child| flex_item_main_size(child, direction))
+            .sum::<f32>()
+            + gap * (in_flow_count.saturating_sub(1) as f32);
+        let free_main = (container_main - used_main).max(0.0);
+        let (leading_space, between_extra) =
+            justify_distribution(justify, free_main, in_flow_count);
+
+        let mut cursor = leading_space;
+        for child in &mut self.children {
+            if child.node_position().is_out_of_flow() {
+                continue;
+            }
+
+            let outer_main = flex_item_main_size(child, direction);
+            let outer_cross = flex_item_cross_size(child, direction);
+            let free_cross = (container_cross - outer_cross).max(0.0);
+            let cross_offset = match child_align_items(child.get_style_node(), align) {
+                AlignItems::FlexStart | AlignItems::Stretch => 0.0,
+                AlignItems::FlexEnd => free_cross,
+                AlignItems::Center => free_cross / 2.0,
+            };
+
+            let (target_x, target_y) = match direction {
+                FlexDirection::Row => (container_x + cursor, container_y + cross_offset),
+                FlexDirection::Column => (container_x + cross_offset, container_y + cursor),
+            };
+            child.shift_to_margin_box(target_x, target_y);
+
+            cursor += outer_main + gap + between_extra;
+        }
     }
 
     fn layout_inline_leaf_fallback(
@@ -1687,20 +2027,28 @@ impl<'a> LayoutBox<'a> {
 }
 
 pub fn build_layout_tree(style_node: &StyledNode) -> LayoutBox<'_> {
+    build_layout_tree_with_mode(style_node, false)
+}
+
+fn build_layout_tree_with_mode(style_node: &StyledNode, force_block_root: bool) -> LayoutBox<'_> {
     // browser.engineering 的に
     // - block の子: block はそのまま
     // - inline の連続: Anonymous block box にまとめて、その中に inline を入れる
     // - inline の子: Chrome と同じように同じ IFC の中へ直列に流す
+    // - flex の子: direct children を flex item として積む
     let display = style_node.display();
-    let layout_display = layout_display_for(style_node);
+    let layout_display = if force_block_root {
+        blockified_display_for(style_node)
+    } else {
+        layout_display_for(style_node)
+    };
 
     let mut root = LayoutBox::new(match layout_display {
-        Display::Block => BoxType::BlockNode(style_node),
+        Display::Block | Display::Flex => BoxType::BlockNode(style_node),
         Display::Inline | Display::InlineBlock => BoxType::InlineNode(style_node),
         Display::None => BoxType::Anonymous,
     });
 
-    // Display::None は上で Anonymous に落ちてるので、ここでは children を作らない（最小）
     if display == Display::None {
         return root;
     }
@@ -1714,21 +2062,25 @@ pub fn build_layout_tree(style_node: &StyledNode) -> LayoutBox<'_> {
         return root;
     }
 
-    // 子をグルーピング
+    if layout_display == Display::Flex {
+        for child in &style_node.children {
+            append_flex_child(&mut root, child);
+        }
+        return root;
+    }
+
     let mut anon: Option<LayoutBox<'_>> = None;
 
     for child in &style_node.children {
         match layout_display_for(child) {
             Display::None => {}
-            Display::Block => {
-                // 先に溜まってる inline を flush
+            Display::Block | Display::Flex => {
                 if let Some(a) = anon.take() {
                     root.children.push(a);
                 }
                 root.children.push(build_layout_tree(child));
             }
             Display::Inline | Display::InlineBlock => {
-                // inline は anonymous block にまとめる
                 if anon.is_none() {
                     anon = Some(LayoutBox::new(BoxType::Anonymous));
                 }
@@ -1746,16 +2098,289 @@ pub fn build_layout_tree(style_node: &StyledNode) -> LayoutBox<'_> {
     root
 }
 
+fn append_flex_child<'a>(root: &mut LayoutBox<'a>, child: &'a StyledNode) {
+    if child.display() == Display::None {
+        return;
+    }
+
+    if child.position().is_out_of_flow() {
+        root.children.push(build_layout_tree(child));
+        return;
+    }
+
+    match &child.node.node_type {
+        crate::dom::NodeType::Text(_) => {
+            let mut anon = LayoutBox::new(BoxType::Anonymous);
+            anon.children.push(build_layout_tree(child));
+            root.children.push(anon);
+        }
+        crate::dom::NodeType::Element(_) => match child.display() {
+            Display::None => {}
+            Display::Block | Display::Flex => root.children.push(build_layout_tree(child)),
+            Display::Inline | Display::InlineBlock => {
+                root.children.push(build_layout_tree_with_mode(child, true));
+            }
+        },
+    }
+}
+
 // ---------------- helpers ----------------
 
 fn layout_display_for(style_node: &StyledNode) -> Display {
     let display = style_node.display();
-    if display != Display::None
+    if display == Display::Flex {
+        Display::Flex
+    } else if display != Display::None
         && (style_node.position().is_out_of_flow() || style_node.float().is_floating())
     {
         Display::Block
     } else {
         display
+    }
+}
+
+fn blockified_display_for(style_node: &StyledNode) -> Display {
+    match &style_node.node.node_type {
+        crate::dom::NodeType::Text(_) => Display::Inline,
+        crate::dom::NodeType::Element(_) => match style_node.display() {
+            Display::None => Display::None,
+            Display::Flex => Display::Flex,
+            Display::Inline | Display::InlineBlock | Display::Block => Display::Block,
+        },
+    }
+}
+
+fn flex_direction(sn: Option<&StyledNode>) -> FlexDirection {
+    match sn.and_then(|node| node.value("flex-direction").map(|value| value.trim())) {
+        Some("column") => FlexDirection::Column,
+        _ => FlexDirection::Row,
+    }
+}
+
+fn justify_content(sn: Option<&StyledNode>) -> JustifyContent {
+    match sn.and_then(|node| node.value("justify-content").map(|value| value.trim())) {
+        Some("flex-end") | Some("end") => JustifyContent::FlexEnd,
+        Some("center") => JustifyContent::Center,
+        Some("space-between") => JustifyContent::SpaceBetween,
+        Some("space-around") => JustifyContent::SpaceAround,
+        Some("space-evenly") => JustifyContent::SpaceEvenly,
+        _ => JustifyContent::FlexStart,
+    }
+}
+
+fn align_items(sn: Option<&StyledNode>) -> AlignItems {
+    match sn.and_then(|node| node.value("align-items").map(|value| value.trim())) {
+        Some("flex-start") | Some("start") => AlignItems::FlexStart,
+        Some("flex-end") | Some("end") => AlignItems::FlexEnd,
+        Some("center") => AlignItems::Center,
+        Some("stretch") => AlignItems::Stretch,
+        _ => AlignItems::Stretch,
+    }
+}
+
+fn child_align_items(sn: Option<&StyledNode>, container_align: AlignItems) -> AlignItems {
+    match sn.and_then(|node| node.value("align-self").map(|value| value.trim())) {
+        Some("auto") | None => container_align,
+        Some("flex-start") | Some("start") => AlignItems::FlexStart,
+        Some("flex-end") | Some("end") => AlignItems::FlexEnd,
+        Some("center") => AlignItems::Center,
+        Some("stretch") => AlignItems::Stretch,
+        _ => container_align,
+    }
+}
+
+fn flex_grow(sn: Option<&StyledNode>) -> f32 {
+    let Some(style_node) = sn else {
+        return 0.0;
+    };
+
+    if let Some(value) = style_node
+        .value("flex-grow")
+        .and_then(|value| value.trim().parse::<f32>().ok())
+    {
+        return value.max(0.0);
+    }
+
+    style_node
+        .value("flex")
+        .and_then(|value| value.split_whitespace().next())
+        .and_then(|value| value.parse::<f32>().ok())
+        .map(|value| value.max(0.0))
+        .unwrap_or(0.0)
+}
+
+fn has_explicit_width(
+    node: &LayoutBox<'_>,
+    containing: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> bool {
+    resolved_content_width(node.get_style_node(), containing, viewport_w, viewport_h).is_some()
+}
+
+fn resolved_content_width(
+    sn: Option<&StyledNode>,
+    containing: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> Option<f32> {
+    let style_node = sn?;
+    style_node
+        .value("width")
+        .and_then(|value| parse_length(Some(style_node), value, containing, viewport_w, viewport_h))
+        .map(|value| value.max(0.0))
+}
+
+fn parse_gap_pair(value: &str) -> (Option<String>, Option<String>) {
+    let parts = value
+        .split_whitespace()
+        .filter(|part| !part.is_empty())
+        .map(|part| part.to_string())
+        .collect::<Vec<_>>();
+
+    match parts.len() {
+        0 => (None, None),
+        1 => (Some(parts[0].clone()), Some(parts[0].clone())),
+        _ => (Some(parts[0].clone()), Some(parts[1].clone())),
+    }
+}
+
+fn flex_main_gap_px(
+    sn: Option<&StyledNode>,
+    direction: FlexDirection,
+    main_basis: f32,
+    _cross_basis: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> f32 {
+    let Some(style_node) = sn else {
+        return 0.0;
+    };
+
+    let (gap_row_sh, gap_col_sh) = style_node
+        .value("gap")
+        .map(|value| parse_gap_pair(value))
+        .unwrap_or((None, None));
+    let row_gap = style_node.value("row-gap").cloned().or(gap_row_sh);
+    let col_gap = style_node.value("column-gap").cloned().or(gap_col_sh);
+    let value = match direction {
+        FlexDirection::Row => col_gap,
+        FlexDirection::Column => row_gap,
+    };
+
+    value
+        .as_deref()
+        .and_then(|gap| parse_length(Some(style_node), gap, main_basis, viewport_w, viewport_h))
+        .unwrap_or(0.0)
+        .max(0.0)
+}
+
+fn flex_row_item_base_outer_width(
+    node: &LayoutBox<'_>,
+    font: &Font,
+    img_cache: &dyn ImageSizeProvider,
+    containing_width: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> f32 {
+    let extras = node
+        .get_style_node()
+        .map(|sn| horizontal_box_model_width(sn, containing_width, viewport_w, viewport_h))
+        .unwrap_or(0.0);
+
+    if let Some(width) = resolved_content_width(
+        node.get_style_node(),
+        containing_width,
+        viewport_w,
+        viewport_h,
+    ) {
+        return (width + extras).max(layout_constants::MIN_LAYOUT_SIZE_PX);
+    }
+
+    estimate_layout_box_outer_width(
+        node,
+        font,
+        img_cache,
+        containing_width,
+        viewport_w,
+        viewport_h,
+    )
+    .max((extras + layout_constants::MIN_LAYOUT_SIZE_PX).max(layout_constants::MIN_LAYOUT_SIZE_PX))
+}
+
+fn flex_column_item_outer_width(
+    node: &LayoutBox<'_>,
+    font: &Font,
+    img_cache: &dyn ImageSizeProvider,
+    containing_width: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+    stretch_cross: bool,
+) -> f32 {
+    let extras = node
+        .get_style_node()
+        .map(|sn| horizontal_box_model_width(sn, containing_width, viewport_w, viewport_h))
+        .unwrap_or(0.0);
+
+    if let Some(width) = resolved_content_width(
+        node.get_style_node(),
+        containing_width,
+        viewport_w,
+        viewport_h,
+    ) {
+        return (width + extras).max(layout_constants::MIN_LAYOUT_SIZE_PX);
+    }
+
+    if stretch_cross {
+        return containing_width.max(layout_constants::MIN_LAYOUT_SIZE_PX);
+    }
+
+    estimate_layout_box_outer_width(
+        node,
+        font,
+        img_cache,
+        containing_width,
+        viewport_w,
+        viewport_h,
+    )
+    .max((extras + layout_constants::MIN_LAYOUT_SIZE_PX).max(layout_constants::MIN_LAYOUT_SIZE_PX))
+}
+
+fn flex_item_main_size(node: &LayoutBox<'_>, direction: FlexDirection) -> f32 {
+    match direction {
+        FlexDirection::Row => node.dimensions.margin_box_width(),
+        FlexDirection::Column => node.dimensions.margin_box_height(),
+    }
+}
+
+fn flex_item_cross_size(node: &LayoutBox<'_>, direction: FlexDirection) -> f32 {
+    match direction {
+        FlexDirection::Row => node.dimensions.margin_box_height(),
+        FlexDirection::Column => node.dimensions.margin_box_width(),
+    }
+}
+
+fn justify_distribution(justify: JustifyContent, free_space: f32, item_count: usize) -> (f32, f32) {
+    if item_count == 0 {
+        return (0.0, 0.0);
+    }
+
+    match justify {
+        JustifyContent::FlexStart => (0.0, 0.0),
+        JustifyContent::FlexEnd => (free_space, 0.0),
+        JustifyContent::Center => (free_space / 2.0, 0.0),
+        JustifyContent::SpaceBetween if item_count > 1 => {
+            (0.0, free_space / (item_count.saturating_sub(1) as f32))
+        }
+        JustifyContent::SpaceAround => {
+            let between = free_space / (item_count as f32);
+            (between / 2.0, between)
+        }
+        JustifyContent::SpaceEvenly => {
+            let between = free_space / ((item_count + 1) as f32);
+            (between, between)
+        }
+        _ => (0.0, 0.0),
     }
 }
 
@@ -3557,5 +4182,173 @@ mod tests {
         assert!(
             (clear.dimensions.content.y - (container.dimensions.content.y + 60.0)).abs() <= 0.5
         );
+    }
+
+    #[test]
+    fn flex_row_places_items_horizontally_with_gap() {
+        let styled = styled_tree_with_css(
+            r#"
+            <div id="container">
+                <div id="first"></div>
+                <div id="second"></div>
+            </div>
+            "#,
+            r#"
+            #container {
+                display: flex;
+                width: 200px;
+                gap: 12px;
+                margin: 0;
+                padding: 0;
+            }
+            #first, #second {
+                display: block;
+                width: 40px;
+                height: 20px;
+                margin: 0;
+                padding: 0;
+            }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 320.0;
+        viewport.content.height = 240.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let first = find_element_by_id(&layout, "first").unwrap();
+        let second = find_element_by_id(&layout, "second").unwrap();
+
+        assert!((first.dimensions.content.y - second.dimensions.content.y).abs() <= 0.5);
+        assert!(
+            (second.dimensions.margin_box_rect().x
+                - (first.dimensions.margin_box_rect().x
+                    + first.dimensions.margin_box_width()
+                    + 12.0))
+                .abs()
+                <= 0.5
+        );
+    }
+
+    #[test]
+    fn flex_row_distributes_remaining_width_with_flex_grow() {
+        let styled = styled_tree_with_css(
+            r#"
+            <div id="container">
+                <div id="first"></div>
+                <div id="second"></div>
+            </div>
+            "#,
+            r#"
+            #container {
+                display: flex;
+                width: 180px;
+                margin: 0;
+                padding: 0;
+            }
+            #first {
+                flex: 1;
+                height: 20px;
+                margin: 0;
+                padding: 0;
+            }
+            #second {
+                flex: 2;
+                height: 20px;
+                margin: 0;
+                padding: 0;
+            }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 320.0;
+        viewport.content.height = 240.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let first = find_element_by_id(&layout, "first").unwrap();
+        let second = find_element_by_id(&layout, "second").unwrap();
+
+        assert!(
+            ((first.dimensions.content.width + second.dimensions.content.width) - 180.0).abs()
+                <= 1.0
+        );
+        assert!(second.dimensions.content.width > first.dimensions.content.width);
+        assert!(
+            (second.dimensions.content.width - (first.dimensions.content.width * 2.0)).abs() <= 2.0
+        );
+    }
+
+    #[test]
+    fn flex_column_stacks_items_vertically_with_gap() {
+        let styled = styled_tree_with_css(
+            r#"
+            <div id="container">
+                <div id="first"></div>
+                <div id="second"></div>
+            </div>
+            "#,
+            r#"
+            #container {
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+                width: 120px;
+                margin: 0;
+                padding: 0;
+            }
+            #first, #second {
+                display: block;
+                width: 30px;
+                height: 20px;
+                margin: 0;
+                padding: 0;
+            }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 320.0;
+        viewport.content.height = 240.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let first = find_element_by_id(&layout, "first").unwrap();
+        let second = find_element_by_id(&layout, "second").unwrap();
+
+        assert!((first.dimensions.content.x - second.dimensions.content.x).abs() <= 0.5);
+        assert!(
+            (second.dimensions.margin_box_rect().y
+                - (first.dimensions.margin_box_rect().y
+                    + first.dimensions.margin_box_height()
+                    + 10.0))
+                .abs()
+                <= 0.5
+        );
+    }
+
+    #[test]
+    fn flex_container_blockifies_inline_children() {
+        let styled = styled_tree_with_css(
+            r#"
+            <div id="container">
+                <span id="item"><b>hello</b> world</span>
+            </div>
+            "#,
+            r#"
+            #container {
+                display: flex;
+                width: 200px;
+                margin: 0;
+                padding: 0;
+            }
+            "#,
+        );
+        let layout = build_layout_tree(&styled);
+        let item = find_element_by_id(&layout, "item").unwrap();
+
+        assert!(matches!(item.box_type, BoxType::BlockNode(_)));
     }
 }
