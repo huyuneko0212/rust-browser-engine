@@ -45,6 +45,7 @@ pub enum Display {
     InlineBlock,
     Block,
     Flex,
+    Grid,
     None,
 }
 
@@ -183,6 +184,9 @@ impl StyledNode {
                 "inline" => Display::Inline,
                 "inline-block" => Display::InlineBlock,
                 "flex" => Display::Flex,
+                "inline-flex" => Display::Flex,
+                "grid" => Display::Grid,
+                "inline-grid" => Display::Grid,
                 "none" => Display::None,
                 _ => Display::Inline,
             };
@@ -1620,6 +1624,18 @@ mod tests {
         let target = find_element_by_id(&styled, "target").expect("target div should exist");
 
         assert_eq!(target.display(), Display::Flex);
+    }
+
+    #[test]
+    fn display_grid_is_supported() {
+        let dom = crate::html::parse(r#"<ol id="target"></ol>"#.to_string());
+        let stylesheet =
+            crate::css::Parser::new(r#"#target { display: grid; }"#.to_string()).parse_stylesheet();
+
+        let styled = style_tree(dom, &stylesheet);
+        let target = find_element_by_id(&styled, "target").expect("target ol should exist");
+
+        assert_eq!(target.display(), Display::Grid);
     }
 
     #[test]

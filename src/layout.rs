@@ -177,6 +177,12 @@ enum FlexDirection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlexWrap {
+    NoWrap,
+    Wrap,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JustifyContent {
     FlexStart,
     FlexEnd,
@@ -332,7 +338,7 @@ impl<'a> LayoutBox<'a> {
     }
 
     fn is_flex_container(&self) -> bool {
-        self.node_display() == Some(Display::Flex)
+        matches!(self.node_display(), Some(Display::Flex | Display::Grid))
     }
 
     fn node_position(&self) -> Position {
@@ -591,6 +597,7 @@ impl<'a> LayoutBox<'a> {
         img_cache: &dyn ImageSizeProvider,
     ) {
         let direction = flex_direction(self.get_style_node());
+        let wrap = flex_wrap(self.get_style_node());
         let align_items = align_items(self.get_style_node());
         let viewport_w = viewport
             .content
@@ -620,6 +627,7 @@ impl<'a> LayoutBox<'a> {
             viewport_w,
             viewport_h,
         );
+        let grid_columns = grid_template_column_count(self.get_style_node()).unwrap_or(0);
 
         let mut item_indices = Vec::new();
         let mut total_grow = 0.0f32;
@@ -646,15 +654,21 @@ impl<'a> LayoutBox<'a> {
 
             match direction {
                 FlexDirection::Row => {
-                    cb.content.width = flex_row_item_base_outer_width(
-                        child,
-                        font,
-                        img_cache,
-                        container_w,
-                        viewport_w,
-                        viewport_h,
-                    )
-                    .max(layout_constants::MIN_LAYOUT_SIZE_PX);
+                    cb.content.width = if grid_columns > 0 {
+                        let gaps_total = main_gap * grid_columns.saturating_sub(1) as f32;
+                        ((container_w - gaps_total).max(0.0) / grid_columns as f32)
+                            .max(layout_constants::MIN_LAYOUT_SIZE_PX)
+                    } else {
+                        flex_row_item_base_outer_width(
+                            child,
+                            font,
+                            img_cache,
+                            container_w,
+                            viewport_w,
+                            viewport_h,
+                        )
+                        .max(layout_constants::MIN_LAYOUT_SIZE_PX)
+                    };
                 }
                 FlexDirection::Column => {
                     cb.content.width = flex_column_item_outer_width(
@@ -664,7 +678,7 @@ impl<'a> LayoutBox<'a> {
                         container_w,
                         viewport_w,
                         viewport_h,
-                        align_items == AlignItems::Stretch,
+                        align_items == AlignItems::Stretch && wrap == FlexWrap::NoWrap,
                     )
                     .max(layout_constants::MIN_LAYOUT_SIZE_PX);
                 }
@@ -692,7 +706,11 @@ impl<'a> LayoutBox<'a> {
             cross_max = cross_max.max(flex_item_cross_size(child, direction));
         }
 
-        if direction == FlexDirection::Row && total_grow > 0.0 && !item_indices.is_empty() {
+        if direction == FlexDirection::Row
+            && wrap == FlexWrap::NoWrap
+            && total_grow > 0.0
+            && !item_indices.is_empty()
+        {
             let gaps_total = main_gap * (item_indices.len().saturating_sub(1) as f32);
             let free_space = (container_w - main_total - gaps_total).max(0.0);
 
@@ -743,6 +761,19 @@ impl<'a> LayoutBox<'a> {
         }
 
         self.dimensions.content.height = match direction {
+            FlexDirection::Row if wrap == FlexWrap::Wrap => {
+                let cross_gap = flex_cross_gap_px(
+                    self.get_style_node(),
+                    direction,
+                    container_w,
+                    container_h,
+                    viewport_w,
+                    viewport_h,
+                );
+                let lines = flex_lines(&self.children, direction, wrap, container_w, main_gap);
+                let gaps_total = cross_gap * (lines.len().saturating_sub(1) as f32);
+                (lines.iter().map(|line| line.cross_size).sum::<f32>() + gaps_total).max(0.0)
+            }
             FlexDirection::Row => cross_max.max(0.0),
             FlexDirection::Column => {
                 let gaps_total = main_gap * (item_indices.len().saturating_sub(1) as f32);
@@ -753,6 +784,7 @@ impl<'a> LayoutBox<'a> {
 
     fn position_flex_children(&mut self) {
         let direction = flex_direction(self.get_style_node());
+        let wrap = flex_wrap(self.get_style_node());
         let justify = justify_content(self.get_style_node());
         let align = align_items(self.get_style_node());
         let container_x = self.dimensions.content.x;
@@ -785,6 +817,26 @@ impl<'a> LayoutBox<'a> {
                 .height
                 .max(layout_constants::MIN_LAYOUT_SIZE_PX),
         );
+        let cross_gap = flex_cross_gap_px(
+            self.get_style_node(),
+            direction,
+            self.dimensions
+                .content
+                .width
+                .max(layout_constants::MIN_LAYOUT_SIZE_PX),
+            self.dimensions
+                .content
+                .height
+                .max(layout_constants::MIN_LAYOUT_SIZE_PX),
+            self.dimensions
+                .content
+                .width
+                .max(layout_constants::MIN_LAYOUT_SIZE_PX),
+            self.dimensions
+                .content
+                .height
+                .max(layout_constants::MIN_LAYOUT_SIZE_PX),
+        );
 
         let in_flow_count = self
             .children
@@ -793,6 +845,54 @@ impl<'a> LayoutBox<'a> {
             .count();
 
         if in_flow_count == 0 {
+            return;
+        }
+
+        if wrap == FlexWrap::Wrap {
+            let lines = flex_lines(
+                &self.children,
+                direction,
+                wrap,
+                container_main.max(layout_constants::MIN_LAYOUT_SIZE_PX),
+                gap,
+            );
+            let mut cross_cursor = 0.0;
+
+            for line in lines {
+                let free_main = (container_main - line.main_size).max(0.0);
+                let (leading_space, between_extra) =
+                    justify_distribution(justify, free_main, line.indices.len());
+
+                let mut main_cursor = leading_space;
+                for index in line.indices {
+                    let child = &mut self.children[index];
+                    let outer_main = flex_item_main_size(child, direction);
+                    let outer_cross = flex_item_cross_size(child, direction);
+                    let free_cross = (line.cross_size - outer_cross).max(0.0);
+                    let cross_offset = match child_align_items(child.get_style_node(), align) {
+                        AlignItems::FlexStart | AlignItems::Stretch => 0.0,
+                        AlignItems::FlexEnd => free_cross,
+                        AlignItems::Center => free_cross / 2.0,
+                    };
+
+                    let (target_x, target_y) = match direction {
+                        FlexDirection::Row => (
+                            container_x + main_cursor,
+                            container_y + cross_cursor + cross_offset,
+                        ),
+                        FlexDirection::Column => (
+                            container_x + cross_cursor + cross_offset,
+                            container_y + main_cursor,
+                        ),
+                    };
+                    child.shift_to_margin_box(target_x, target_y);
+
+                    main_cursor += outer_main + gap + between_extra;
+                }
+
+                cross_cursor += line.cross_size + cross_gap;
+            }
+
             return;
         }
 
@@ -2035,7 +2135,7 @@ fn build_layout_tree_with_mode(style_node: &StyledNode, force_block_root: bool) 
     };
 
     let mut root = LayoutBox::new(match layout_display {
-        Display::Block | Display::Flex => BoxType::BlockNode(style_node),
+        Display::Block | Display::Flex | Display::Grid => BoxType::BlockNode(style_node),
         Display::Inline | Display::InlineBlock => BoxType::InlineNode(style_node),
         Display::None => BoxType::Anonymous,
     });
@@ -2053,7 +2153,7 @@ fn build_layout_tree_with_mode(style_node: &StyledNode, force_block_root: bool) 
         return root;
     }
 
-    if layout_display == Display::Flex {
+    if matches!(layout_display, Display::Flex | Display::Grid) {
         for child in &style_node.children {
             append_flex_child(&mut root, child);
         }
@@ -2065,7 +2165,7 @@ fn build_layout_tree_with_mode(style_node: &StyledNode, force_block_root: bool) 
     for child in &style_node.children {
         match layout_display_for(child) {
             Display::None => {}
-            Display::Block | Display::Flex => {
+            Display::Block | Display::Flex | Display::Grid => {
                 if let Some(a) = anon.take() {
                     root.children.push(a);
                 }
@@ -2107,7 +2207,9 @@ fn append_flex_child<'a>(root: &mut LayoutBox<'a>, child: &'a StyledNode) {
         }
         crate::dom::NodeType::Element(_) => match child.display() {
             Display::None => {}
-            Display::Block | Display::Flex => root.children.push(build_layout_tree(child)),
+            Display::Block | Display::Flex | Display::Grid => {
+                root.children.push(build_layout_tree(child))
+            }
             Display::Inline | Display::InlineBlock => {
                 root.children.push(build_layout_tree_with_mode(child, true));
             }
@@ -2117,8 +2219,8 @@ fn append_flex_child<'a>(root: &mut LayoutBox<'a>, child: &'a StyledNode) {
 
 fn layout_display_for(style_node: &StyledNode) -> Display {
     let display = style_node.display();
-    if display == Display::Flex {
-        Display::Flex
+    if matches!(display, Display::Flex | Display::Grid) {
+        display
     } else if display != Display::None
         && (style_node.position().is_out_of_flow() || style_node.float().is_floating())
     {
@@ -2133,17 +2235,87 @@ fn blockified_display_for(style_node: &StyledNode) -> Display {
         crate::dom::NodeType::Text(_) => Display::Inline,
         crate::dom::NodeType::Element(_) => match style_node.display() {
             Display::None => Display::None,
-            Display::Flex => Display::Flex,
+            Display::Flex | Display::Grid => style_node.display(),
             Display::Inline | Display::InlineBlock | Display::Block => Display::Block,
         },
     }
 }
 
 fn flex_direction(sn: Option<&StyledNode>) -> FlexDirection {
-    match sn.and_then(|node| node.value("flex-direction").map(|value| value.trim())) {
-        Some("column") => FlexDirection::Column,
-        _ => FlexDirection::Row,
+    if let Some(direction) =
+        sn.and_then(|node| node.value("flex-direction").map(|value| value.trim()))
+    {
+        return match direction {
+            "column" => FlexDirection::Column,
+            _ => FlexDirection::Row,
+        };
     }
+
+    if sn
+        .and_then(|node| node.value("flex-flow"))
+        .is_some_and(|value| value.split_whitespace().any(|token| token == "column"))
+    {
+        FlexDirection::Column
+    } else {
+        FlexDirection::Row
+    }
+}
+
+fn flex_wrap(sn: Option<&StyledNode>) -> FlexWrap {
+    if sn.is_some_and(|node| node.display() == Display::Grid) {
+        return FlexWrap::Wrap;
+    }
+
+    if let Some(wrap) = sn.and_then(|node| node.value("flex-wrap").map(|value| value.trim())) {
+        return match wrap {
+            "wrap" | "wrap-reverse" => FlexWrap::Wrap,
+            _ => FlexWrap::NoWrap,
+        };
+    }
+
+    if sn
+        .and_then(|node| node.value("flex-flow"))
+        .is_some_and(|value| {
+            value
+                .split_whitespace()
+                .any(|token| matches!(token, "wrap" | "wrap-reverse"))
+        })
+    {
+        FlexWrap::Wrap
+    } else {
+        FlexWrap::NoWrap
+    }
+}
+
+fn grid_template_column_count(sn: Option<&StyledNode>) -> Option<usize> {
+    let style_node = sn?;
+    if style_node.display() != Display::Grid {
+        return None;
+    }
+
+    let template = style_node.value("grid-template-columns")?;
+    let template = template.trim();
+    if template.is_empty() || template == "none" {
+        return None;
+    }
+
+    if let Some(count) = parse_grid_repeat_count(template) {
+        return Some(count.max(1));
+    }
+
+    let count = template
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .count();
+    (count > 0).then_some(count)
+}
+
+fn parse_grid_repeat_count(template: &str) -> Option<usize> {
+    let start = template.find("repeat(")? + "repeat(".len();
+    let rest = &template[start..];
+    let first = rest.split(',').next()?.trim();
+
+    first.parse::<usize>().ok()
 }
 
 fn justify_content(sn: Option<&StyledNode>) -> JustifyContent {
@@ -2196,6 +2368,62 @@ fn flex_grow(sn: Option<&StyledNode>) -> f32 {
         .and_then(|value| value.parse::<f32>().ok())
         .map(|value| value.max(0.0))
         .unwrap_or(0.0)
+}
+
+fn flex_basis_px(
+    sn: Option<&StyledNode>,
+    containing: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> Option<f32> {
+    let style_node = sn?;
+
+    if let Some(value) = style_node.value("flex-basis") {
+        let value = value.trim();
+        if !value.eq_ignore_ascii_case("auto") {
+            return parse_length(Some(style_node), value, containing, viewport_w, viewport_h)
+                .map(|value| value.max(0.0));
+        }
+    }
+
+    let flex = style_node.value("flex")?;
+    let tokens = flex
+        .split_whitespace()
+        .map(|token| token.trim())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+
+    if tokens.is_empty()
+        || tokens
+            .iter()
+            .any(|token| *token == "none" || *token == "auto")
+    {
+        return None;
+    }
+
+    let basis = if tokens.len() >= 3 {
+        tokens[2]
+    } else if tokens.len() == 2 && is_flex_basis_token(tokens[1]) {
+        tokens[1]
+    } else if tokens.len() == 1 && is_flex_basis_token(tokens[0]) {
+        tokens[0]
+    } else {
+        return None;
+    };
+
+    parse_length(Some(style_node), basis, containing, viewport_w, viewport_h)
+        .map(|value| value.max(0.0))
+}
+
+fn is_flex_basis_token(token: &str) -> bool {
+    let token = token.trim();
+    token == "0"
+        || token.ends_with("px")
+        || token.ends_with('%')
+        || token.ends_with("em")
+        || token.ends_with("rem")
+        || token.ends_with("vw")
+        || token.ends_with("vh")
 }
 
 fn has_explicit_width(
@@ -2264,6 +2492,91 @@ fn flex_main_gap_px(
         .max(0.0)
 }
 
+fn flex_cross_gap_px(
+    sn: Option<&StyledNode>,
+    direction: FlexDirection,
+    _main_basis: f32,
+    cross_basis: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> f32 {
+    let Some(style_node) = sn else {
+        return 0.0;
+    };
+
+    let (gap_row_sh, gap_col_sh) = style_node
+        .value("gap")
+        .map(|value| parse_gap_pair(value))
+        .unwrap_or((None, None));
+    let row_gap = style_node.value("row-gap").cloned().or(gap_row_sh);
+    let col_gap = style_node.value("column-gap").cloned().or(gap_col_sh);
+    let value = match direction {
+        FlexDirection::Row => row_gap,
+        FlexDirection::Column => col_gap,
+    };
+
+    value
+        .as_deref()
+        .and_then(|gap| parse_length(Some(style_node), gap, cross_basis, viewport_w, viewport_h))
+        .unwrap_or(0.0)
+        .max(0.0)
+}
+
+fn flex_lines(
+    children: &[LayoutBox<'_>],
+    direction: FlexDirection,
+    wrap: FlexWrap,
+    main_limit: f32,
+    gap: f32,
+) -> Vec<FlexLine> {
+    let mut lines = Vec::new();
+    let mut current = FlexLine {
+        indices: Vec::new(),
+        main_size: 0.0,
+        cross_size: 0.0,
+    };
+
+    for (index, child) in children.iter().enumerate() {
+        if child.node_position().is_out_of_flow() {
+            continue;
+        }
+
+        let item_main = flex_item_main_size(child, direction);
+        let item_cross = flex_item_cross_size(child, direction);
+        let next_main = if current.indices.is_empty() {
+            item_main
+        } else {
+            current.main_size + gap + item_main
+        };
+
+        if wrap == FlexWrap::Wrap
+            && !current.indices.is_empty()
+            && next_main > main_limit.max(layout_constants::MIN_LAYOUT_SIZE_PX) + 0.5
+        {
+            lines.push(current);
+            current = FlexLine {
+                indices: Vec::new(),
+                main_size: 0.0,
+                cross_size: 0.0,
+            };
+        }
+
+        if current.indices.is_empty() {
+            current.main_size = item_main;
+        } else {
+            current.main_size += gap + item_main;
+        }
+        current.cross_size = current.cross_size.max(item_cross);
+        current.indices.push(index);
+    }
+
+    if !current.indices.is_empty() {
+        lines.push(current);
+    }
+
+    lines
+}
+
 fn flex_row_item_base_outer_width(
     node: &LayoutBox<'_>,
     font: &Font,
@@ -2276,6 +2589,15 @@ fn flex_row_item_base_outer_width(
         .get_style_node()
         .map(|sn| horizontal_box_model_width(sn, containing_width, viewport_w, viewport_h))
         .unwrap_or(0.0);
+
+    if let Some(basis) = flex_basis_px(
+        node.get_style_node(),
+        containing_width,
+        viewport_w,
+        viewport_h,
+    ) {
+        return (basis + extras).max(layout_constants::MIN_LAYOUT_SIZE_PX);
+    }
 
     if let Some(width) = resolved_content_width(
         node.get_style_node(),
@@ -2721,6 +3043,13 @@ fn img_intrinsic_size_px(
         layout_constants::DEFAULT_IMAGE_WIDTH_PX,
         layout_constants::DEFAULT_IMAGE_HEIGHT_PX,
     )
+}
+
+#[derive(Debug, Clone)]
+struct FlexLine {
+    indices: Vec<usize>,
+    main_size: f32,
+    cross_size: f32,
 }
 
 fn input_intrinsic_size_px(sn: &crate::style::StyledNode) -> (f32, f32) {
@@ -4322,6 +4651,287 @@ mod tests {
         assert!(second.dimensions.content.width > first.dimensions.content.width);
         assert!(
             (second.dimensions.content.width - (first.dimensions.content.width * 2.0)).abs() <= 2.0
+        );
+    }
+
+    #[test]
+    fn flex_row_wraps_items_when_enabled() {
+        let styled = styled_tree_with_css(
+            r#"
+            <div id="container">
+                <div id="first"></div>
+                <div id="second"></div>
+                <div id="third"></div>
+            </div>
+            "#,
+            r#"
+            #container {
+                display: flex;
+                flex-wrap: wrap;
+                width: 100px;
+                gap: 10px 5px;
+                margin: 0;
+                padding: 0;
+            }
+            #first, #second, #third {
+                display: block;
+                width: 60px;
+                height: 20px;
+                margin: 0;
+                padding: 0;
+            }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 200.0;
+        viewport.content.height = 200.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let container = find_element_by_id(&layout, "container").unwrap();
+        let first = find_element_by_id(&layout, "first").unwrap();
+        let second = find_element_by_id(&layout, "second").unwrap();
+        let third = find_element_by_id(&layout, "third").unwrap();
+
+        assert!((first.dimensions.content.x - second.dimensions.content.x).abs() <= 0.5);
+        assert!((second.dimensions.content.x - third.dimensions.content.x).abs() <= 0.5);
+        assert!((second.dimensions.content.y - (first.dimensions.content.y + 30.0)).abs() <= 0.5);
+        assert!((third.dimensions.content.y - (second.dimensions.content.y + 30.0)).abs() <= 0.5);
+        assert!((container.dimensions.content.height - 80.0).abs() <= 0.5);
+    }
+
+    #[test]
+    fn flex_flow_wrap_shorthand_wraps_items() {
+        let styled = styled_tree_with_css(
+            r#"
+            <div id="container">
+                <div id="first"></div>
+                <div id="second"></div>
+            </div>
+            "#,
+            r#"
+            #container {
+                display: flex;
+                flex-flow: row wrap;
+                width: 100px;
+                row-gap: 6px;
+                margin: 0;
+                padding: 0;
+            }
+            #first, #second {
+                display: block;
+                width: 70px;
+                height: 20px;
+                margin: 0;
+                padding: 0;
+            }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 200.0;
+        viewport.content.height = 200.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let first = find_element_by_id(&layout, "first").unwrap();
+        let second = find_element_by_id(&layout, "second").unwrap();
+
+        assert!((second.dimensions.content.y - (first.dimensions.content.y + 26.0)).abs() <= 0.5);
+    }
+
+    #[test]
+    fn flex_basis_from_flex_shorthand_drives_wrapping() {
+        let styled = styled_tree_with_css(
+            r#"
+            <div id="container">
+                <div id="first">a</div>
+                <div id="second">b</div>
+                <div id="third">c</div>
+                <div id="fourth">d</div>
+            </div>
+            "#,
+            r#"
+            #container {
+                display: flex;
+                flex-wrap: wrap;
+                width: 120px;
+                margin: 0;
+                padding: 0;
+            }
+            #first, #second, #third, #fourth {
+                display: block;
+                flex: 0 0 50%;
+                height: 20px;
+                margin: 0;
+                padding: 0;
+            }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 200.0;
+        viewport.content.height = 200.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let first = find_element_by_id(&layout, "first").unwrap();
+        let second = find_element_by_id(&layout, "second").unwrap();
+        let third = find_element_by_id(&layout, "third").unwrap();
+        let fourth = find_element_by_id(&layout, "fourth").unwrap();
+
+        assert!((first.dimensions.content.width - 60.0).abs() <= 0.5);
+        assert!((second.dimensions.content.x - (first.dimensions.content.x + 60.0)).abs() <= 0.5);
+        assert!((third.dimensions.content.y - (first.dimensions.content.y + 20.0)).abs() <= 0.5);
+        assert!((fourth.dimensions.content.x - (third.dimensions.content.x + 60.0)).abs() <= 0.5);
+    }
+
+    #[test]
+    fn display_grid_places_items_in_template_columns() {
+        let styled = styled_tree_with_css(
+            r#"
+            <ol id="trend">
+                <li id="one">one</li>
+                <li id="two">two</li>
+                <li id="three">three</li>
+                <li id="four">four</li>
+            </ol>
+            "#,
+            r#"
+            #trend {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                column-gap: 6px;
+                row-gap: 4px;
+                width: 156px;
+                margin: 0;
+                padding: 0;
+            }
+            #trend > li {
+                display: block;
+                height: 20px;
+                margin: 0;
+                padding: 0;
+            }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 240.0;
+        viewport.content.height = 200.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let one = find_element_by_id(&layout, "one").unwrap();
+        let two = find_element_by_id(&layout, "two").unwrap();
+        let three = find_element_by_id(&layout, "three").unwrap();
+        let four = find_element_by_id(&layout, "four").unwrap();
+
+        assert!((one.dimensions.content.width - 48.0).abs() <= 0.5);
+        assert!((two.dimensions.content.x - (one.dimensions.content.x + 54.0)).abs() <= 0.5);
+        assert!((three.dimensions.content.x - (two.dimensions.content.x + 54.0)).abs() <= 0.5);
+        assert!((four.dimensions.content.x - one.dimensions.content.x).abs() <= 0.5);
+        assert!((four.dimensions.content.y - (one.dimensions.content.y + 24.0)).abs() <= 0.5);
+    }
+
+    #[test]
+    fn flex_column_wrap_flows_items_into_next_column() {
+        let styled = styled_tree_with_css(
+            r#"
+            <div id="trend">
+                <span id="one">呼称</span>
+                <span id="two">大谷</span>
+                <span id="three">ホームラン</span>
+                <span id="four">WBC</span>
+                <span id="five">物価高</span>
+            </div>
+            "#,
+            r#"
+            #trend {
+                display: flex;
+                flex-flow: column wrap;
+                height: 48px;
+                width: 240px;
+                row-gap: 0;
+                column-gap: 8px;
+                margin: 0;
+                padding: 0;
+            }
+            #trend > span {
+                display: block;
+                height: 16px;
+                margin: 0;
+                padding: 0;
+                font-size: 12px;
+                line-height: 16px;
+            }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 320.0;
+        viewport.content.height = 200.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let one = find_element_by_id(&layout, "one").unwrap();
+        let two = find_element_by_id(&layout, "two").unwrap();
+        let three = find_element_by_id(&layout, "three").unwrap();
+        let four = find_element_by_id(&layout, "four").unwrap();
+        let five = find_element_by_id(&layout, "five").unwrap();
+
+        assert!((two.dimensions.content.y - (one.dimensions.content.y + 16.0)).abs() <= 0.5);
+        assert!((three.dimensions.content.y - (two.dimensions.content.y + 16.0)).abs() <= 0.5);
+        assert!(four.dimensions.content.x > one.dimensions.content.x + 8.0);
+        assert!((four.dimensions.content.y - one.dimensions.content.y).abs() <= 0.5);
+        assert!((five.dimensions.content.y - (four.dimensions.content.y + 16.0)).abs() <= 0.5);
+    }
+
+    #[test]
+    fn flex_row_without_wrap_keeps_overflow_on_single_line() {
+        let styled = styled_tree_with_css(
+            r#"
+            <div id="container">
+                <div id="first"></div>
+                <div id="second"></div>
+            </div>
+            "#,
+            r#"
+            #container {
+                display: flex;
+                width: 100px;
+                gap: 5px;
+                margin: 0;
+                padding: 0;
+            }
+            #first, #second {
+                display: block;
+                width: 60px;
+                height: 20px;
+                margin: 0;
+                padding: 0;
+            }
+            "#,
+        );
+        let mut layout = build_layout_tree(&styled);
+        let mut viewport = Dimensions::default();
+        viewport.content.width = 200.0;
+        viewport.content.height = 200.0;
+
+        layout.layout_with_font(viewport, &test_font(), &EmptyImageCache);
+
+        let first = find_element_by_id(&layout, "first").unwrap();
+        let second = find_element_by_id(&layout, "second").unwrap();
+
+        assert!((first.dimensions.content.y - second.dimensions.content.y).abs() <= 0.5);
+        assert!(
+            (second.dimensions.margin_box_rect().x
+                - (first.dimensions.margin_box_rect().x
+                    + first.dimensions.margin_box_width()
+                    + 5.0))
+                .abs()
+                <= 0.5
         );
     }
 
